@@ -1,0 +1,33 @@
+[package]
+name = "iroh-chain-file-system"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Iroh Chain transport for file-system"
+
+[lib]
+name = "iroh_chain_file_system"
+
+[dependencies]
+# Internal
+file-system = { path = "../file-system", default-features = false, features = ["sync"] }
+iroh-chain = { path = "../iroh-chain", default-features = false, features = [] }
+
+# Serialization
+postcard = { version = "1.1", default-features = false, features = ["alloc", "use-std"] }
+
+# Iroh
+iroh = { version = "1.1", default-features = false, features = [] }
+
+# Async
+tokio = { version = "1.53", default-features = false, features = ["io-util", "rt", "sync"] }
+
+[dev-dependencies]
+file-system = { path = "../file-system", default-features = false, features = ["in-memory"] }
+iroh = { version = "1.1", default-features = true, features = [] }
+iroh-chain = { path = "../iroh-chain", default-features = false, features = ["in-memory"] }
+tokio = { version = "1.53", default-features = false, features = ["macros", "rt-multi-thread", "time"] }

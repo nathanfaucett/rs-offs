@@ -1,0 +1,39 @@
+[package]
+name = "file-system"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Local-first, eventually consistent file system primitives"
+
+[lib]
+name = "file_system"
+
+[features]
+default = []
+in-memory = []
+native = []
+sync = []
+
+[dependencies]
+# Internal
+deckv = { path = "../deckv", default-features = false, features = ["redb", "std"] }
+
+# Async
+tokio = { version = "1.52", default-features = false, features = ["sync"] }
+
+# Serialization
+serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
+
+# Storage
+redb = { version = "4.3", default-features = false, features = ["std"] }
+
+# Utilities
+sha2 = { version = "0.10", default-features = false, features = [] }
+uuid = { version = "1.26", default-features = false, features = ["serde", "std", "v7"] }
+
+[dev-dependencies]
+tokio = { version = "1.52", default-features = false, features = ["macros", "rt"] }

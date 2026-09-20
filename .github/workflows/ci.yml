@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (with rustfmt + clippy)
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+          components: rustfmt, clippy
+
+      - name: Install just
+        run: cargo install just --locked
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Rust fmt check
+        run: just fmt-check
+
+      - name: Cargo clippy
+        run: just clippy
+
+  cargo-tests:
+    name: Cargo tests
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Install just
+        run: cargo install just --locked
+
+      - name: Install llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      - name: Install crap
+        run: cargo install cargo-crap --locked
+
+      - name: Install cargo-hack
+        run: cargo install cargo-hack --locked
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Show rustc/cargo
+        run: rustc --version && cargo --version
+
+      - name: Test feature combinations
+        run: just crap-summary

@@ -1,0 +1,69 @@
+{
+    "name": "@aicacia/iroh-client",
+    "version": "0.1.0",
+    "description": "Aicacia Iroh Client",
+    "keywords": [
+        "aicacia",
+        "iroh",
+        "client"
+    ],
+    "author": "Nathan Faucett",
+    "license": "(MIT OR Apache-2.0)",
+    "readmeFilename": "README.md",
+    "type": "module",
+    "module": "esm",
+    "main": "esm",
+    "types": "types",
+    "exports": {
+        ".": {
+            "types": "./types/index.d.ts",
+            "default": "./esm/index.js"
+        },
+        "./package.json": "./package.json"
+    },
+    "scripts": {
+        "build:esm": "tsc --project tsconfig.json",
+        "build:browser": "rolldown -c",
+        "build": "pnpm run clean && pnpm run build:esm && pnpm run build:browser",
+        "doc": "typedoc",
+        "prepublishOnly": "pnpm run build",
+        "test": "vitest",
+        "coverage": "vitest --coverage",
+        "coverage:html": "vitest --coverage --reporter=html",
+        "clean": "shx rm -rf esm browser types .nyc_output coverage tsconfig.tsbuildinfo",
+        "lint": "biome lint .",
+        "lint:fix": "biome lint --write .",
+        "format": "biome format .",
+        "format:fix": "biome format --write .",
+        "preCommit": "pnpm run lint:fix && pnpm run coverage",
+        "prepare": "husky"
+    },
+    "husky": {
+        "hooks": {
+            "pre-commit": "pnpm run preCommit"
+        }
+    },
+    "dependencies": {
+        "eventemitter3": "^5.0.4",
+        "@aicacia/iroh-client-wasm": "workspace:*"
+    },
+    "devDependencies": {
+        "@biomejs/biome": "^2.5.3",
+        "@types/benchmark": "^2.1.5",
+        "@vitest/coverage-v8": "^4.1.10",
+        "benchmark": "^2.1.4",
+        "globals": "^17.7.0",
+        "husky": "^9.1.7",
+        "rolldown": "^1.1.5",
+        "rolldown-plugin-wasm": "^0.3.2",
+        "shx": "^0.4.0",
+        "ts-node": "^10.9.2",
+        "vitest": "4.1.10",
+        "tslib": "^2.8.1",
+        "typedoc": "^0.28.17",
+        "typescript": "^5.9.3"
+    },
+    "peerDependencies": {
+        "tslib": "2"
+    }
+}

@@ -1,0 +1,35 @@
+[package]
+name = "deckv"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Offline first distributed eventually consistent key-value store"
+
+[lib]
+name = "deckv"
+
+[features]
+default = ["in-memory", "redb", "std"]
+in-memory = ["dashmap"]
+redb = ["dep:redb", "dep:postcard", "postcard/alloc", "std"]
+std = ["uuid/std", "serde/std", "futures-util/std", "redb?/std", "postcard?/use-std"]
+
+[dependencies]
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+
+uuid = { version = "1.26", default-features = false, features = ["v7"] }
+hashbrown = { version = "0.17", default-features = false, features = ["default-hasher"] }
+dashmap = { version = "6.2", optional = true, default-features = false, features = ["serde"] }
+postcard = { version = "1.1", optional = true, default-features = false, features = [] }
+tokio = { version = "1", default-features = false, features = ["macros", "rt", "sync"] }
+
+# Async
+futures-core = { version = "0.3", default-features = false, features = [] }
+futures-util = { version = "0.3", default-features = false, features = [] }
+async-stream = { version = "0.3", default-features = false, features = [] }
+
+redb = { version = "4.3", optional = true, default-features = false, features = [] }

@@ -1,0 +1,17 @@
+.github/
+.husky/
+.nyc_output/
+.vscode/
+coverage/
+docs/
+src/
+test-data/
+node_modules/
+.editorconfig
+biome.json
+pnpm-workspace.yaml
+.gitignore
+npm-debug.log
+rollup.config.mjs
+tsconfig.esm.json
+tsconfig.json

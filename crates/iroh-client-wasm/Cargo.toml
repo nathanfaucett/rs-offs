@@ -1,0 +1,69 @@
+[package]
+name = "iroh-client-wasm"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Iroh Client for Web Assembly"
+
+[lib]
+name = "iroh_client_wasm"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+
+[dependencies]
+# Iroh
+iroh = { version = "1.0", default-features = false, features = ["tls-ring"] }
+iroh-tickets = { version = "1.0", default-features = false, features = [] }
+iroh-gossip = { version = "0.101", default-features = false, features = [
+  "net",
+] }
+
+# Errors
+anyhow = { version = "1.0", default-features = false, features = ["std"] }
+
+# Async
+n0-future = { version = "0.3", default-features = false, features = [] }
+tokio = { version = "1.52", default-features = false, features = ["sync"] }
+
+# Serialization
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
+serde-wasm-bindgen = { version = "0.6", default-features = false, features = [
+] }
+
+# WASM
+js-sys = { version = "0.3", default-features = false, features = [] }
+wasm-bindgen = { version = "0.2", default-features = false, features = [] }
+wasm-bindgen-futures = { version = "0.4", default-features = false, features = [
+] }
+wasm-streams = { version = "0.5", default-features = false, features = [] }
+
+# Tracing
+tracing = { version = "0.1", default-features = false, features = [] }
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+  "env-filter",
+] }
+tracing-subscriber-wasm = { version = "0.1", default-features = false, features = [
+] }
+
+# Utilities
+thiserror = { version = "1.0", default-features = false, features = [] }
+console_error_panic_hook = { version = "0.1", default-features = false, features = [
+] }
+getrandom = { version = "0.3", default-features = false, features = [
+  "wasm_js",
+] }
+
+[dev-dependencies]
+ed25519-dalek = { version = "3.0", default-features = false, features = [
+  "rand_core",
+] }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["--enable-nontrapping-float-to-int", "--enable-bulk-memory"]

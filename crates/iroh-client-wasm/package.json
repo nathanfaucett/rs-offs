@@ -1,0 +1,13 @@
+{
+  "name": "@aicacia/iroh-client-wasm",
+  "private": true,
+  "version": "0.1.0",
+  "files": ["dist"],
+  "main": "dist/iroh_client_wasm.js",
+  "types": "dist/iroh_client_wasm.d.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpx wasm-pack build . --dev --weak-refs --reference-types -t bundler -d dist",
+    "build": "pnpx wasm-pack build . --release -t bundler -d dist"
+  }
+}

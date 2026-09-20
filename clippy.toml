@@ -1,0 +1,29 @@
+# Cognitive complexity threshold
+cognitive-complexity-threshold = 15
+
+# Documentation
+missing-docs-in-crate-items = false
+
+# Type complexity threshold
+type-complexity-threshold = 250
+
+# Avoid breaking exported API
+avoid-breaking-exported-api = false
+
+# Struct field initialization consistency
+check-inconsistent-struct-field-initializers = true
+
+# Lint commented code
+lint-commented-code = true
+
+# Single character binding names threshold
+single-char-binding-names-threshold = 4
+
+# Too many arguments threshold
+too-many-arguments-threshold = 10
+
+# Too many lines threshold
+too-many-lines-threshold = 100
+
+# Vec box size threshold
+vec-box-size-threshold = 4096

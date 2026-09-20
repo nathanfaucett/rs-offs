@@ -1,0 +1,15 @@
+repos:
+  - repo: local
+    hooks:
+      - id: fmt
+        name: Run rustfmt
+        entry: just fmt
+        language: system
+        files: \.rs$
+        pass_filenames: false
+      - id: clippy-fix
+        name: Run clippy with --fix
+        entry: just clippy-fix
+        language: system
+        files: \.rs$
+        pass_filenames: false
