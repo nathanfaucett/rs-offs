@@ -292,10 +292,10 @@ where
                 });
                 if !retained
                     && let Err(error) = fs::remove_file(self.content_path(file_id))
-                        && error.kind() != std::io::ErrorKind::NotFound
-                    {
-                        return Err(error.into());
-                    }
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    return Err(error.into());
+                }
             }
         }
         Ok(())
