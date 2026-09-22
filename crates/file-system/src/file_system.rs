@@ -1,13 +1,14 @@
 use std::{
     fmt::Debug,
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Mutex,
 };
 
-use serde::{Serialize, de::DeserializeOwned};
-use sha2::{Digest, Sha256};
+use bytes::Bytes;
+use futures_util::StreamExt;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use deckv::{RedbStorage, Store};
 use tokio::sync::broadcast;
@@ -15,6 +16,7 @@ use uuid::Uuid;
 
 use crate::{
     Error, FileKind, FileMeta, ReadStream, Residency,
+    file_service::{ScanPage, scan_page},
     path::{directory, file},
     residency::ResidencyRules,
 };
@@ -22,7 +24,8 @@ use crate::{
 pub(crate) type MetadataStore<PeerId> =
     Store<PeerId, String, FileMeta<PeerId>, RedbStorage<PeerId, String, FileMeta<PeerId>>>;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(bound(deserialize = "PeerId: Ord + Deserialize<'de>"))]
 pub struct Entry<PeerId = Uuid> {
     pub path: String,
     pub meta: FileMeta<PeerId>,
@@ -130,18 +133,49 @@ where
         file(path)?;
         self.require_full(path)?;
         self.ensure_parent_directories(path).await?;
-        let mut meta = match self.get(path).await? {
+        let meta = match self.get(path).await? {
             Some(meta) if meta.kind == FileKind::Directory => return Err(Error::IsDirectory),
             Some(meta) => meta,
             None => FileMeta::file(Uuid::now_v7(), self.node_id.clone()),
         };
         write_file(&self.content_path(meta.file_id), content)?;
-        meta.pointer = Some(content_pointer(content));
         self.put(path, meta.clone()).await?;
         Ok(Entry {
             path: path.to_owned(),
             meta,
         })
+    }
+
+    pub async fn write_at(
+        &self,
+        path: &str,
+        expected_revision: deckv::Timestamp,
+        offset: u64,
+        data: Bytes,
+    ) -> Result<u32, Error> {
+        file(path)?;
+        self.require_full(path)?;
+        let entry = self.entry(path).await?;
+        if entry.meta.kind == FileKind::Directory {
+            return Err(Error::IsDirectory);
+        }
+        if self.revision(path).await? != expected_revision {
+            return Err(Error::StaleRevision);
+        }
+        let length = u32::try_from(data.len()).map_err(|_| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "write is too large",
+            ))
+        })?;
+        let mut content = OpenOptions::new()
+            .write(true)
+            .open(self.content_path(entry.meta.file_id))?;
+        content.seek(SeekFrom::Start(offset))?;
+        content.write_all(&data)?;
+        content.sync_all()?;
+        self.put(path, entry.meta).await?;
+        Ok(length)
     }
 
     pub async fn append(&self, path: &str, content: &[u8]) -> Result<(), Error> {
@@ -156,9 +190,7 @@ where
             .open(self.content_path(entry.meta.file_id))?;
         file.write_all(content)?;
         file.sync_all()?;
-        let mut meta = entry.meta;
-        meta.pointer = Some(content_pointer(&fs::read(self.content_path(meta.file_id))?));
-        self.put(path, meta).await
+        self.put(path, entry.meta).await
     }
 
     pub async fn create_dir(&self, path: &str) -> Result<Entry<PeerId>, Error> {
@@ -213,6 +245,15 @@ where
         Ok(entries)
     }
 
+    pub async fn scan(
+        &self,
+        path: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<ScanPage<PeerId>, Error> {
+        scan_page(self.list(path).await?, cursor, limit)
+    }
+
     pub async fn delete(&self, path: &str) -> Result<(), Error> {
         let _ = self.entry(path).await?;
         self.metadata
@@ -261,7 +302,7 @@ where
 
     async fn verify_content(&self, path: &str) -> Result<(), Error> {
         for (entry_path, record) in self.metadata.entries().await.map_err(metadata_error)? {
-            if (entry_path == path || entry_path.starts_with(&format!("{path}/")))
+            if within(path, &entry_path)
                 && record.value.is_some_and(|meta| {
                     meta.kind == FileKind::File && !self.content_path(meta.file_id).is_file()
                 })
@@ -275,7 +316,7 @@ where
     async fn evict_unreferenced(&self, path: &str) -> Result<(), Error> {
         let entries = self.metadata.entries().await.map_err(metadata_error)?;
         for (entry_path, record) in &entries {
-            if (entry_path == path || entry_path.starts_with(&format!("{path}/")))
+            if within(path, entry_path)
                 && record
                     .value
                     .as_ref()
@@ -335,10 +376,26 @@ where
         self.content_root.join(file_id.to_string())
     }
 
-    pub(crate) async fn content(&self, file_id: Uuid, pointer: &str) -> Result<Vec<u8>, Error> {
-        if !self.has_content_pointer(file_id, pointer).await? {
+    pub async fn revision(&self, path: &str) -> Result<deckv::Timestamp, Error> {
+        self.metadata
+            .entries()
+            .await
+            .map_err(metadata_error)?
+            .into_iter()
+            .find(|(entry_path, _)| entry_path == path)
+            .map(|(_, record)| record.timestamp)
+            .ok_or(Error::NotFound)
+    }
+
+    pub(crate) async fn content(
+        &self,
+        file_id: Uuid,
+        revision: deckv::Timestamp,
+    ) -> Result<Vec<u8>, Error> {
+        if !self.has_revision(file_id, revision).await? {
             return Err(Error::ContentUnavailable);
         }
+
         let content = fs::read(self.content_path(file_id)).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 Error::ContentUnavailable
@@ -346,39 +403,56 @@ where
                 Error::Io(error)
             }
         })?;
-        if content_pointer(&content) != pointer {
+        Ok(content)
+    }
+
+    pub(crate) async fn content_stream(
+        &self,
+        file_id: Uuid,
+        revision: deckv::Timestamp,
+    ) -> Result<ReadStream, Error> {
+        if !self.has_revision(file_id, revision).await? {
             return Err(Error::ContentUnavailable);
         }
-        Ok(content)
+        ReadStream::new(File::open(self.content_path(file_id))?, 64 * 1024)
     }
 
     pub(crate) async fn store_content(
         &self,
         file_id: Uuid,
-        pointer: &str,
-        content: &[u8],
+        revision: deckv::Timestamp,
+        mut stream: crate::ByteStream<Error>,
     ) -> Result<(), Error> {
-        if content_pointer(content) != pointer
-            || !self.has_content_pointer(file_id, pointer).await?
-        {
+        if !self.has_revision(file_id, revision).await? {
             return Ok(());
         }
-        write_file(&self.content_path(file_id), content)
+        let path = self.content_path(file_id);
+        let temporary = path.with_extension(format!("{}.tmp", Uuid::now_v7()));
+        let result = (|| -> Result<File, Error> { Ok(File::create(&temporary)?) })();
+        let mut file = match result {
+            Ok(file) => file,
+            Err(error) => return Err(error),
+        };
+        while let Some(chunk) = stream.next().await {
+            if let Err(error) = file.write_all(&chunk?) {
+                let _ = fs::remove_file(&temporary);
+                return Err(error.into());
+            }
+        }
+        file.sync_all()?;
+        fs::rename(temporary, path)?;
+        Ok(())
     }
 
-    async fn has_content_pointer(&self, file_id: Uuid, pointer: &str) -> Result<bool, Error> {
-        Ok(self
-            .metadata
-            .entries()
-            .await
-            .map_err(metadata_error)?
-            .into_iter()
-            .filter_map(|(_, record)| record.value)
-            .any(|meta| {
-                meta.kind == FileKind::File
-                    && meta.file_id == file_id
-                    && meta.pointer.as_deref() == Some(pointer)
-            }))
+    async fn has_revision(&self, file_id: Uuid, revision: deckv::Timestamp) -> Result<bool, Error> {
+        let entries = self.metadata.entries().await.map_err(metadata_error)?;
+        Ok(entries.into_iter().any(|(_, record)| {
+            record.timestamp == revision
+                && record
+                    .value
+                    .as_ref()
+                    .is_some_and(|meta| meta.file_id == file_id)
+        }))
     }
 
     async fn put(&self, path: &str, meta: FileMeta<PeerId>) -> Result<(), Error> {
@@ -404,8 +478,8 @@ fn write_file(path: &Path, content: &[u8]) -> Result<(), Error> {
     result
 }
 
-fn content_pointer(content: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(content))
+fn within(scope: &str, path: &str) -> bool {
+    scope.is_empty() || path == scope || path.starts_with(&format!("{scope}/"))
 }
 
 fn metadata_error(error: impl std::fmt::Display) -> Error {

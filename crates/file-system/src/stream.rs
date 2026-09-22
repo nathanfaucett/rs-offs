@@ -1,4 +1,12 @@
-use std::{fs::File, io::Read};
+use std::{
+    fs::File,
+    io::Read,
+    pin::Pin,
+    task::{Context, Poll},
+};
+
+use bytes::Bytes;
+use futures_core::Stream;
 
 use crate::Error;
 
@@ -17,18 +25,18 @@ impl ReadStream {
     }
 }
 
-impl Iterator for ReadStream {
-    type Item = Result<Vec<u8>, Error>;
+impl Stream for ReadStream {
+    type Item = Result<Bytes, Error>;
 
-    fn next(&mut self) -> Option<Self::Item> {
+    fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut chunk = vec![0; self.chunk_size];
         match self.file.read(&mut chunk) {
-            Ok(0) => None,
+            Ok(0) => Poll::Ready(None),
             Ok(len) => {
                 chunk.truncate(len);
-                Some(Ok(chunk))
+                Poll::Ready(Some(Ok(Bytes::from(chunk))))
             }
-            Err(error) => Some(Err(error.into())),
+            Err(error) => Poll::Ready(Some(Err(error.into()))),
         }
     }
 }

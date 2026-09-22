@@ -5,7 +5,6 @@ members = [
   "crates/file-system",
   "crates/iroh-chain",
   "crates/iroh-chain-file-system",
-  "crates/iroh-client-wasm",
 ]
 
 [workspace.package]

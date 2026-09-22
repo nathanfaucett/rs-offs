@@ -1,6 +1,0 @@
-packages:
-  - "packages/*"
-  - "packages/**/example"
-  - "crates/iroh-client-wasm"
-allowBuilds:
-  esbuild: true

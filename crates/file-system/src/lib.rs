@@ -2,6 +2,7 @@
 
 mod error;
 mod file_meta;
+mod file_service;
 mod file_system;
 mod memory_transport;
 mod path;
@@ -12,9 +13,15 @@ mod transport;
 
 pub use error::Error;
 pub use file_meta::{FileKind, FileMeta};
+pub use file_service::{
+    DEFAULT_SCAN_LIMIT, FileHandle, FileHandleId, FileOperation, FileResponse, FileServiceError,
+    OpenRequest, ScanPage,
+};
 pub use file_system::{Entry, FileSystem};
 pub use memory_transport::{MemoryNetwork, MemoryTransport, MemoryTransportError};
 pub use residency::Residency;
 pub use stream::ReadStream;
-pub use sync::{MetadataSync, SyncMessage};
-pub use transport::{IncomingMessage, Transport};
+pub use sync::{FileRequest, MetadataSync, SyncMessage};
+pub use transport::{
+    ByteStream, FileRequestMessage, FileService, FileSink, IncomingMessage, Transport,
+};

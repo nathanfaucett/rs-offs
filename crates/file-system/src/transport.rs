@@ -1,13 +1,18 @@
-use core::{error::Error, future::Future};
+use core::{error::Error, future::Future, pin::Pin};
 
-use tokio::sync::broadcast;
+use bytes::Bytes;
+use futures_core::Stream;
+use tokio::sync::{broadcast, mpsc};
 
-use crate::SyncMessage;
+use crate::{FileRequest, SyncMessage};
 
+pub type ByteStream<E> = Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send>>;
+pub type FileRequestMessage<PeerId> = (PeerId, FileRequest, FileSink);
+pub type FileSink = mpsc::Sender<Bytes>;
 pub type IncomingMessage<PeerId> = (PeerId, SyncMessage<PeerId>);
 
 pub trait Transport<PeerId> {
-    type Error: Error;
+    type Error: Error + 'static;
 
     fn peers(&self) -> Vec<PeerId>;
 
@@ -23,4 +28,14 @@ pub trait Transport<PeerId> {
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     fn subscribe(&self) -> broadcast::Receiver<IncomingMessage<PeerId>>;
+}
+
+pub trait FileService<PeerId>: Transport<PeerId> {
+    fn open_file(
+        &self,
+        peer: PeerId,
+        request: FileRequest,
+    ) -> impl Future<Output = Result<ByteStream<Self::Error>, Self::Error>> + Send;
+
+    fn subscribe_file_requests(&self) -> broadcast::Receiver<FileRequestMessage<PeerId>>;
 }

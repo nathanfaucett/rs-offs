@@ -24,6 +24,10 @@ The File System is the local-first replicated storage engine built on deckv. It 
 
 A File Entry is the replicated metadata for one path: file id, kind, providers, locality, deletion state, and mode/owner/group. The file id is stable across renames; the path key is not.
 
+## Content Revision
+
+A Content Revision is the version of file bytes represented by the current metadata record. It is used with the file id to request a specific version from a provider. A checksum may verify a completed stream, but is not the protocol identity or storage key.
+
 ## Residency
 
 Residency is a device-local choice per path: Full or Passthrough. Full stores metadata and content locally. Passthrough stores and synchronizes metadata only, and obtains content from an online Full peer when read; it is read-only. The most-specific rule applies. Residency is never synchronized.
@@ -34,28 +38,24 @@ A Merge Strategy determines how concurrent file updates reconcile. Ordinary file
 
 ## Transport
 
-A Transport moves typed sync messages between peers. It is defined by a trait (send, broadcast, subscribe) so iroh can be swapped or mocked; an in-memory transport exists for tests.
+A Transport moves typed sync messages between peers. It is defined by a trait (send, broadcast, subscribe) so the network stack can be swapped or mocked; an in-memory transport exists for tests. Metadata broadcast fans out to allowlisted peers over direct metadata-sync streams; file bytes use a separate direct file-transfer stream.
 
 ## Endpoint ID
 
-An Endpoint ID identifies one iroh endpoint (device) on the network. Servers decide which Endpoint IDs may connect.
+An Endpoint ID identifies one iroh endpoint (device) on the network. An Allowed Endpoint list decides which Endpoint IDs may connect.
 
 ## Pairing
 
-Pairing is the handshake that introduces two endpoints and exchanges the payload needed to trust each other. A Pairing Offer is one side's pending invitation, answered over a dedicated stream.
+Pairing is the handshake that introduces two endpoints and exchanges the payload needed to trust each other. A Pairing Offer is one side's pending invitation, answered over a dedicated pairing channel.
 
-## Vault ID
+## Root ID
 
-A Vault ID identifies the filesystem being synchronized. Its hash scopes the iroh transport session.
+A Root ID identifies the filesystem being synchronized. It scopes every metadata-sync and file-transfer request for that root.
 
-## Transport Tunnel
+## Discovery
 
-A Transport Tunnel is an isolated iroh stream for one vault and endpoint pair. A Tunnel Authorizer validates each incoming tunnel before it is accepted; an Allowed Endpoint list decides which endpoints may connect at all.
+Discovery resolves endpoint addresses and connection paths. It does not authorize an endpoint: every discovered endpoint must pass the chained-endpoint allowlist before it can use application protocols.
 
-## Scoped Transport
+## Root Transport
 
-A Scoped Transport binds the generic iroh transport to one vault and one access-token provider, so the file system sync engine can use it without knowing iroh details.
-
-## Iroh Client
-
-The Iroh Client is the WASM/TypeScript binding that lets browser applications drive iroh connections, tunnels, and pairing events.
+A Root Transport binds the generic transport to one Root ID and its allowlist, so the file system sync engine can use it without knowing network details.

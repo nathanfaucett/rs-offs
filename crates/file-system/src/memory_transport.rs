@@ -4,12 +4,21 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use tokio::sync::broadcast;
+use futures_util::stream;
+use tokio::sync::{broadcast, mpsc};
 
-use crate::{IncomingMessage, SyncMessage, Transport};
+use crate::{
+    ByteStream, FileRequest, FileRequestMessage, FileService, IncomingMessage, SyncMessage,
+    Transport,
+};
+
+struct MemoryPeer<PeerId> {
+    metadata: broadcast::Sender<IncomingMessage<PeerId>>,
+    file_requests: broadcast::Sender<FileRequestMessage<PeerId>>,
+}
 
 struct MemoryNetworkState<PeerId> {
-    peers: Mutex<BTreeMap<PeerId, broadcast::Sender<IncomingMessage<PeerId>>>>,
+    peers: Mutex<BTreeMap<PeerId, MemoryPeer<PeerId>>>,
     capacity: usize,
 }
 
@@ -40,12 +49,19 @@ impl<PeerId> MemoryNetwork<PeerId> {
 impl<PeerId: Clone + Ord> MemoryNetwork<PeerId> {
     #[must_use]
     pub fn transport(&self, peer: PeerId) -> MemoryTransport<PeerId> {
-        let sender = broadcast::channel(self.state.capacity).0;
+        let metadata = broadcast::channel(self.state.capacity).0;
+        let file_requests = broadcast::channel(self.state.capacity).0;
         self.state
             .peers
             .lock()
             .expect("memory network lock poisoned")
-            .insert(peer.clone(), sender);
+            .insert(
+                peer.clone(),
+                MemoryPeer {
+                    metadata,
+                    file_requests,
+                },
+            );
         MemoryTransport {
             peer,
             network: self.clone(),
@@ -106,7 +122,7 @@ where
             .lock()
             .expect("memory network lock poisoned")
             .get(&peer)
-            .cloned()
+            .map(|peer| peer.metadata.clone())
             .ok_or(MemoryTransportError::UnknownPeer)?;
         let _ = sender.send((self.peer.clone(), message));
         Ok(())
@@ -121,7 +137,7 @@ where
             .expect("memory network lock poisoned")
             .iter()
             .filter(|(peer, _)| *peer != &self.peer)
-            .map(|(_, sender)| sender.clone())
+            .map(|(_, peer)| peer.metadata.clone())
             .collect::<Vec<_>>();
         for sender in senders {
             let _ = sender.send((self.peer.clone(), message.clone()));
@@ -137,6 +153,45 @@ where
             .expect("memory network lock poisoned")
             .get(&self.peer)
             .expect("memory transport is not registered")
+            .metadata
+            .subscribe()
+    }
+}
+
+impl<PeerId> FileService<PeerId> for MemoryTransport<PeerId>
+where
+    PeerId: Clone + Ord + Send + Sync + 'static,
+{
+    async fn open_file(
+        &self,
+        peer: PeerId,
+        request: FileRequest,
+    ) -> Result<ByteStream<Self::Error>, Self::Error> {
+        let sender = self
+            .network
+            .state
+            .peers
+            .lock()
+            .expect("memory network lock poisoned")
+            .get(&peer)
+            .map(|peer| peer.file_requests.clone())
+            .ok_or(MemoryTransportError::UnknownPeer)?;
+        let (response, receiver) = mpsc::channel(self.network.state.capacity);
+        let _ = sender.send((self.peer.clone(), request, response));
+        Ok(Box::pin(stream::unfold(receiver, |mut receiver| async {
+            receiver.recv().await.map(|chunk| (Ok(chunk), receiver))
+        })))
+    }
+
+    fn subscribe_file_requests(&self) -> broadcast::Receiver<FileRequestMessage<PeerId>> {
+        self.network
+            .state
+            .peers
+            .lock()
+            .expect("memory network lock poisoned")
+            .get(&self.peer)
+            .expect("memory transport is not registered")
+            .file_requests
             .subscribe()
     }
 }

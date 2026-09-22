@@ -1,6 +1,10 @@
-use std::{env, fs};
+use std::{env, fs, sync::Arc};
 
-use file_system::{Error, FileKind, FileSystem, MemoryNetwork, Residency, SyncMessage, Transport};
+use bytes::Bytes;
+use file_system::{
+    Error, FileKind, FileRequest, FileService, FileSystem, MemoryNetwork, Residency,
+};
+use futures_util::TryStreamExt;
 use uuid::Uuid;
 
 fn root() -> std::path::PathBuf {
@@ -144,14 +148,16 @@ async fn passthrough_fetch_materializes_before_full_residency() {
         Err(Error::ContentUnavailable)
     ));
 
-    right_sync.fetch("notes.txt").await.unwrap();
+    let stream = right_sync.stream("notes.txt").await.unwrap();
     left_sync.pump().await.unwrap();
-    right_sync.pump().await.unwrap();
-    right
-        .set_residency("notes.txt", Residency::Full)
-        .await
-        .unwrap();
-    assert_eq!(right.read("notes.txt").await.unwrap(), b"content");
+    assert_eq!(
+        stream.try_collect::<Vec<_>>().await.unwrap().concat(),
+        b"content"
+    );
+    assert!(matches!(
+        right.set_residency("notes.txt", Residency::Full).await,
+        Err(Error::ContentUnavailable)
+    ));
 
     fs::remove_dir_all(left_root).unwrap();
     fs::remove_dir_all(right_root).unwrap();
@@ -214,38 +220,81 @@ async fn syncs_content_and_rejects_stale_responses() {
     let left = FileSystem::open(&left_root, 1_u8).unwrap();
     let right = FileSystem::open(&right_root, 2_u8).unwrap();
     let left_transport = network.transport(1);
-    let left_sender = left_transport.clone();
     let right_transport = network.transport(2);
+    let right_sender = right_transport.clone();
 
     full(&left).await;
     full(&right).await;
     let entry = left.write("file.txt", b"old").await.unwrap();
-    assert_eq!(
-        entry.meta.pointer.as_deref(),
-        Some("sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4")
-    );
-    let stale_pointer = entry.meta.pointer.unwrap();
+    let stale_revision = left.revision("file.txt").await.unwrap();
     let mut left_sync = left.metadata_sync(left_transport);
     let mut right_sync = right.metadata_sync(right_transport);
     synchronize(&mut left_sync, &mut right_sync).await;
-    assert_eq!(right.read("file.txt").await.unwrap(), b"old");
+    let stream = right_sync.stream("file.txt").await.unwrap();
+    left_sync.pump().await.unwrap();
+    assert_eq!(
+        stream.try_collect::<Vec<_>>().await.unwrap().concat(),
+        b"old"
+    );
 
     left.write("file.txt", b"new").await.unwrap();
     synchronize(&mut left_sync, &mut right_sync).await;
-    left_sender
-        .send(
-            2,
-            SyncMessage::ContentResponse {
+    let _stream = right_sender
+        .open_file(
+            1,
+            FileRequest {
                 file_id: entry.meta.file_id,
-                pointer: stale_pointer,
-                content: b"old".to_vec(),
+                revision: stale_revision,
             },
         )
         .await
         .unwrap();
-    right_sync.pump().await.unwrap();
+    assert!(matches!(
+        left_sync.pump().await,
+        Err(file_system::Error::ContentUnavailable)
+    ));
+    assert_eq!(
+        right.entry("file.txt").await.unwrap().meta,
+        left.entry("file.txt").await.unwrap().meta
+    );
+    fs::remove_dir_all(left_root).unwrap();
+    fs::remove_dir_all(right_root).unwrap();
+}
 
-    assert_eq!(right.read("file.txt").await.unwrap(), b"new");
+#[tokio::test]
+async fn full_peer_serves_content_to_passthrough_peer() {
+    let left_root = root();
+    let right_root = root();
+    let network = MemoryNetwork::new(16);
+    let left = FileSystem::open(&left_root, 1_u8).unwrap();
+    let right = FileSystem::open(&right_root, 2_u8).unwrap();
+    full(&left).await;
+    full(&right).await;
+    left.write("file.txt", b"content").await.unwrap();
+
+    let left_transport = network.transport(1);
+    let right_transport = network.transport(2);
+    let mut left_sync = left.metadata_sync(left_transport);
+    let mut right_sync = right.metadata_sync(right_transport);
+    synchronize(&mut left_sync, &mut right_sync).await;
+    right
+        .set_residency("", Residency::Passthrough)
+        .await
+        .unwrap();
+    assert!(matches!(
+        right.read("file.txt").await,
+        Err(Error::ContentUnavailable)
+    ));
+
+    let stream = right_sync.stream("file.txt").await.unwrap();
+    left_sync.pump().await.unwrap();
+    let content = stream.try_collect::<Vec<_>>().await.unwrap();
+    assert_eq!(content.concat(), b"content");
+    assert!(matches!(
+        right.read("file.txt").await,
+        Err(Error::ContentUnavailable)
+    ));
+
     fs::remove_dir_all(left_root).unwrap();
     fs::remove_dir_all(right_root).unwrap();
 }
@@ -263,12 +312,15 @@ async fn reports_unavailable_requested_content() {
     let mut left_sync = left.metadata_sync(left_transport);
     let _right_sync = right.metadata_sync(right_transport);
 
-    right_sender
-        .send(
+    let _stream = right_sender
+        .open_file(
             1,
-            SyncMessage::ContentRequest {
+            FileRequest {
                 file_id: Uuid::now_v7(),
-                pointer: "sha256:missing".into(),
+                revision: deckv::Timestamp {
+                    physical: 0,
+                    logical: 0,
+                },
             },
         )
         .await
@@ -280,6 +332,55 @@ async fn reports_unavailable_requested_content() {
     ));
     fs::remove_dir_all(left_root).unwrap();
     fs::remove_dir_all(right_root).unwrap();
+}
+
+#[tokio::test]
+async fn write_at_requires_current_revision_and_preserves_offset_semantics() {
+    let root = root();
+    let file_system = FileSystem::open(&root, 7_u8).unwrap();
+    full(&file_system).await;
+    file_system.write("file.txt", b"hello").await.unwrap();
+    let revision = file_system.revision("file.txt").await.unwrap();
+
+    assert_eq!(
+        file_system
+            .write_at("file.txt", revision, 1, Bytes::from_static(b"i"))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(file_system.read("file.txt").await.unwrap(), b"hillo");
+
+    let stale = file_system
+        .write_at("file.txt", revision, 0, Bytes::from_static(b"x"))
+        .await;
+    assert!(matches!(stale, Err(Error::StaleRevision)));
+    assert_eq!(file_system.read("file.txt").await.unwrap(), b"hillo");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn scan_uses_valid_cursors_and_has_no_phantom_final_cursor() {
+    let root = root();
+    let file_system = FileSystem::open(&root, 7_u8).unwrap();
+    full(&file_system).await;
+    for name in ["a", "b", "c"] {
+        file_system.write(name, name.as_bytes()).await.unwrap();
+    }
+
+    let first = file_system.scan("", None, 2).await.unwrap();
+    assert_eq!(first.entries.len(), 2);
+    let second = file_system
+        .scan("", first.next.as_deref(), 2)
+        .await
+        .unwrap();
+    assert_eq!(second.entries.len(), 1);
+    assert_eq!(second.next, None);
+    assert!(matches!(
+        file_system.scan("", Some("missing"), 2).await,
+        Err(Error::InvalidScanCursor)
+    ));
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]
@@ -471,4 +572,43 @@ async fn persists_metadata_content_and_directory_markers() {
     assert_eq!(file_system.read("notes/today.txt").await.unwrap(), b"hello");
 
     fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn sync_peer_continuously_converges_metadata() {
+    let left_root = root();
+    let right_root = root();
+    let network = MemoryNetwork::new(16);
+    let left = Arc::new(FileSystem::open(&left_root, 1_u8).unwrap());
+    let right = Arc::new(FileSystem::open(&right_root, 2_u8).unwrap());
+    full(&left).await;
+    full(&right).await;
+
+    let left_task = {
+        let left = Arc::clone(&left);
+        let transport = network.transport(1);
+        tokio::spawn(async move { left.sync_peer(transport).await })
+    };
+    let right_task = {
+        let right = Arc::clone(&right);
+        let transport = network.transport(2);
+        tokio::spawn(async move { right.sync_peer(transport).await })
+    };
+
+    left.write("notes.txt", b"content").await.unwrap();
+    for _ in 0..20 {
+        if right.entry("notes.txt").await.is_ok() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        right.revision("notes.txt").await.unwrap(),
+        left.revision("notes.txt").await.unwrap()
+    );
+
+    left_task.abort();
+    right_task.abort();
+    fs::remove_dir_all(left_root).unwrap();
+    fs::remove_dir_all(right_root).unwrap();
 }

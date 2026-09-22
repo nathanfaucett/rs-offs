@@ -57,7 +57,7 @@ deckv supplies (see ADR-0001):
 **FileMeta** (the value stored in deckv) contains:
 
 ```
-{ file_id, pointer, providers, local, tombstone, mode, owner, group }
+{ file_id, providers, local, tombstone, mode, owner, group }
 ```
 
 - `file_id`: stable UUID v7. Rename changes the path key, not the id. UUID v7 can serve as a FUSE inode.
@@ -70,10 +70,12 @@ No Merkle tree and no shared-root CRDT over the keyspace — each path key is an
 
 ### 3. Transport — typed messages
 
+> **Superseded in part** by [ADR 0001 — Direct Iroh sync streams](../adr/0001-gossip-blobs-mesh-transport.md): the default network stack uses root-scoped direct metadata and file-transfer protocols through an Iroh Router, not framed bi-di tunnels. Discovery is independent of the chained-endpoint allowlist. The Transport trait and message-enum shape below remain.
+
 The library defines the message types (an enum). The transport encodes/decodes them and moves them between peers. No topics in the trait.
 
 ```rust
-enum SyncMessage { /* metadata updates, content requests, … */ }
+enum SyncMessage { /* metadata requests and deltas */ }
 
 trait Transport {
     type PeerId;
@@ -86,7 +88,7 @@ trait Transport {
 - Default: iroh (encode to bytes on the wire).
 - In-memory transport for tests: pass `SyncMessage` by value (or `Arc`) with no serialization.
 
-Metadata sync piggy-backs on deckv’s own sync protocol where possible; content requests and residency signalling use additional message variants.
+Metadata sync carries requests and deltas. File content uses a separate provider-targeted stream keyed by `file_id` and the metadata-record revision; content is not carried in metadata messages.
 
 ### 4. Sync engine
 
@@ -94,7 +96,7 @@ Owns content fetch, residency, and the coordination of metadata (via deckv) with
 
 **Two conflict layers:**
 
-1. **Key / metadata** (existence, pointer, rename, delete, mode, owner, group) → handled entirely by deckv (per-key LWW).
+1. **Key / metadata** (existence, rename, delete, mode, owner, group) → handled entirely by deckv (per-key LWW).
 2. **File content** → by **file type** (extension / MIME), not a per-file setting:
    - Default for most types: **LWW** (one winning version of the whole file).
    - Types with a known extension (e.g. `.am`, `.automerge`) use a compiled-in plugin — typically a **diff-based CRDT with one independent root per file**. Peers exchange ops/diffs, not full state. No shared root across keys.

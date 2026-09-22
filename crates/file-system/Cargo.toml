@@ -23,6 +23,8 @@ sync = []
 deckv = { path = "../deckv", default-features = false, features = ["redb", "std"] }
 
 # Async
+futures-core = { version = "0.3", default-features = false, features = ["alloc"] }
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 tokio = { version = "1.52", default-features = false, features = ["sync"] }
 
 # Serialization
@@ -32,8 +34,9 @@ serde = { version = "1.0", default-features = false, features = ["derive", "std"
 redb = { version = "4.3", default-features = false, features = ["std"] }
 
 # Utilities
-sha2 = { version = "0.10", default-features = false, features = [] }
+bytes = { version = "1.11", default-features = false, features = ["serde", "std"] }
 uuid = { version = "1.26", default-features = false, features = ["serde", "std", "v7"] }
 
 [dev-dependencies]
-tokio = { version = "1.52", default-features = false, features = ["macros", "rt"] }
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+tokio = { version = "1.52", default-features = false, features = ["macros", "rt", "time"] }

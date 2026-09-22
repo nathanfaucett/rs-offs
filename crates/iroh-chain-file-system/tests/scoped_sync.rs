@@ -6,19 +6,19 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use file_system::{FileSystem, Residency};
-use iroh::{Endpoint, RelayMode, endpoint::presets};
-use iroh_chain::{InMemoryEndpointIdStore, Server, TUNNEL_ALPN, TunnelAuthorizer, VaultId};
-use iroh_chain_file_system::{ScopedIrohTransport, StaticAccessToken};
-use tokio::{spawn, time::timeout};
+use file_system::{Error as FileSystemError, FileSystem, Residency};
+use futures_util::TryStreamExt;
+
+use iroh_chain::{InMemoryEndpointIdStore, RootAuthorizer, RootId, Server};
+use iroh_chain_file_system::{RootIrohTransport, StaticAccessToken};
 
 #[derive(Clone)]
 struct TestAuthorizer;
 
-impl TunnelAuthorizer for TestAuthorizer {
+impl RootAuthorizer for TestAuthorizer {
     async fn authorize(
         &self,
-        _: VaultId,
+        _: RootId,
         _: iroh::EndpointId,
         _: iroh::EndpointId,
         authorization: &[u8],
@@ -28,7 +28,7 @@ impl TunnelAuthorizer for TestAuthorizer {
 }
 
 #[tokio::test]
-async fn metadata_converges_over_a_scoped_tunnel() -> Result<(), Error> {
+async fn metadata_converges_over_direct_sync() -> Result<(), Error> {
     let peers = peers().await?;
     let left_root = root("metadata-left");
     let right_root = root("metadata-right");
@@ -49,8 +49,14 @@ async fn metadata_converges_over_a_scoped_tunnel() -> Result<(), Error> {
     tokio::time::sleep(Duration::from_millis(10)).await;
     right_sync.pump().await.map_err(other)?;
 
-    let left_entry = left.entry("notes/today.txt").await.map_err(other)?;
-    let right_entry = right.entry("notes/today.txt").await.map_err(other)?;
+    let left_entry = left
+        .entry("notes/today.txt")
+        .await
+        .map_err(|error| other(format!("left entry: {error}")))?;
+    let right_entry = right
+        .entry("notes/today.txt")
+        .await
+        .map_err(|error| other(format!("right entry: {error}")))?;
     assert_eq!(right_entry.meta, left_entry.meta);
 
     peers.close().await?;
@@ -60,7 +66,22 @@ async fn metadata_converges_over_a_scoped_tunnel() -> Result<(), Error> {
 }
 
 #[tokio::test]
-async fn fetches_content_over_a_scoped_tunnel() -> Result<(), Error> {
+async fn discovery_still_requires_allowlist_authorization() -> Result<(), Error> {
+    let peers = peers().await?;
+    let unknown = iroh::SecretKey::generate().public();
+
+    let error = peers
+        .left_transport
+        .connect_discovered(unknown)
+        .await
+        .expect_err("discovery must not bypass the allowlist");
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+
+    peers.close().await
+}
+
+#[tokio::test]
+async fn streams_passthrough_content_without_persistence() -> Result<(), Error> {
     let peers = peers().await?;
     let left_root = root("content-left");
     let right_root = root("content-right");
@@ -70,7 +91,7 @@ async fn fetches_content_over_a_scoped_tunnel() -> Result<(), Error> {
         .await
         .map_err(other)?;
     right
-        .set_residency("", Residency::Full)
+        .set_residency("", Residency::Passthrough)
         .await
         .map_err(other)?;
     left.write("notes/today.txt", b"hello")
@@ -84,15 +105,22 @@ async fn fetches_content_over_a_scoped_tunnel() -> Result<(), Error> {
     left_sync.pump().await.map_err(other)?;
     tokio::time::sleep(Duration::from_millis(10)).await;
     right_sync.pump().await.map_err(other)?;
+
+    let stream = right_sync.stream("notes/today.txt").await.map_err(other)?;
     tokio::time::sleep(Duration::from_millis(10)).await;
     left_sync.pump().await.map_err(other)?;
-    tokio::time::sleep(Duration::from_millis(10)).await;
-    right_sync.pump().await.map_err(other)?;
-
     assert_eq!(
-        right.read("notes/today.txt").await.map_err(other)?,
+        stream
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(other)?
+            .concat(),
         b"hello"
     );
+    assert!(matches!(
+        right.read("notes/today.txt").await,
+        Err(FileSystemError::ContentUnavailable)
+    ));
 
     peers.close().await?;
     fs::remove_dir_all(left_root)?;
@@ -103,78 +131,68 @@ async fn fetches_content_over_a_scoped_tunnel() -> Result<(), Error> {
 struct Peers {
     left: Server<InMemoryEndpointIdStore, TestAuthorizer>,
     right: Server<InMemoryEndpointIdStore, TestAuthorizer>,
-    left_transport: ScopedIrohTransport<InMemoryEndpointIdStore, TestAuthorizer, StaticAccessToken>,
-    right_transport:
-        ScopedIrohTransport<InMemoryEndpointIdStore, TestAuthorizer, StaticAccessToken>,
-    left_listener: tokio::task::JoinHandle<()>,
-    right_listener: tokio::task::JoinHandle<()>,
+    left_transport: RootIrohTransport<InMemoryEndpointIdStore, TestAuthorizer, StaticAccessToken>,
+    right_transport: RootIrohTransport<InMemoryEndpointIdStore, TestAuthorizer, StaticAccessToken>,
+    left_router: iroh::protocol::Router,
+    right_router: iroh::protocol::Router,
 }
 
 impl Peers {
     async fn close(self) -> Result<(), Error> {
+        self.left_router.shutdown().await.map_err(other)?;
+        self.right_router.shutdown().await.map_err(other)?;
         self.left.close().await;
         self.right.close().await;
-        self.left_listener.await.map_err(other)?;
-        self.right_listener.await.map_err(other)?;
         Ok(())
     }
 }
 
 async fn peers() -> Result<Peers, Error> {
-    let left_endpoint = endpoint().await?;
-    let right_endpoint = endpoint().await?;
+    let left_key = iroh::SecretKey::generate();
+    let right_key = iroh::SecretKey::generate();
     let allowed = InMemoryEndpointIdStore::new();
-    allowed.add(left_endpoint.id());
-    allowed.add(right_endpoint.id());
-    let left = Server::new(left_endpoint, allowed.clone(), TestAuthorizer);
-    let right = Server::new(right_endpoint, allowed, TestAuthorizer);
-    let left_listener = spawn_listener(left.clone());
-    let right_listener = spawn_listener(right.clone());
-    let vault_id = VaultId::new([7; 32]);
-    let left_transport = ScopedIrohTransport::new(
+    allowed.add(left_key.public());
+    allowed.add(right_key.public());
+    let left = Server::bind_with_secret_key(
+        iroh::endpoint::presets::N0,
+        left_key,
+        allowed.clone(),
+        TestAuthorizer,
+    )
+    .await
+    .map_err(other)?;
+    let right = Server::bind_with_secret_key(
+        iroh::endpoint::presets::N0,
+        right_key,
+        allowed,
+        TestAuthorizer,
+    )
+    .await
+    .map_err(other)?;
+    let root_id = RootId::new([7; 32]);
+    let left_transport = RootIrohTransport::new(
         left.clone(),
-        vault_id,
+        root_id,
         StaticAccessToken::new(b"authorized".to_vec()),
     );
-    let right_transport = ScopedIrohTransport::new(
+    let right_transport = RootIrohTransport::new(
         right.clone(),
-        vault_id,
+        root_id,
         StaticAccessToken::new(b"authorized".to_vec()),
     );
 
+    let left_router = left_transport.router();
+    let right_router = right_transport.router();
     right_transport.connect(left.endpoint().addr()).await?;
-    timeout(Duration::from_secs(5), async {
-        while left_transport.peers().is_empty() || right_transport.peers().is_empty() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .map_err(other)?;
+    left_transport.connect(right.endpoint().addr()).await?;
 
     Ok(Peers {
         left,
         right,
         left_transport,
         right_transport,
-        left_listener,
-        right_listener,
-    })
-}
-
-async fn endpoint() -> Result<Endpoint, Error> {
-    Endpoint::builder(presets::N0)
-        .alpns(vec![TUNNEL_ALPN.to_vec()])
-        .relay_mode(RelayMode::Disabled)
-        .bind()
-        .await
-        .map_err(other)
-}
-
-fn spawn_listener(
-    manager: Server<InMemoryEndpointIdStore, TestAuthorizer>,
-) -> tokio::task::JoinHandle<()> {
-    spawn(async move {
-        manager.listen().await;
+        left_router,
+        right_router,
     })
 }
 

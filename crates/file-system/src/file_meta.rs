@@ -14,7 +14,7 @@ pub enum FileKind {
 pub struct FileMeta<PeerId = Uuid> {
     pub file_id: Uuid,
     pub kind: FileKind,
-    pub pointer: Option<String>,
+
     pub providers: BTreeSet<PeerId>,
     pub local: bool,
     pub mode: u32,
@@ -35,7 +35,7 @@ impl<PeerId: Ord> FileMeta<PeerId> {
         Self {
             file_id,
             kind,
-            pointer: None,
+
             providers: BTreeSet::from([node_id]),
             local: true,
             mode: match kind {
