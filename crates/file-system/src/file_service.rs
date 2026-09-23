@@ -1,9 +1,11 @@
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
+use core::{future::Future, pin::Pin};
 use deckv::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{Entry, Error};
+use crate::{Entry, Error, FileKind, FileSystem};
+use futures_util::StreamExt;
 
 pub const DEFAULT_SCAN_LIMIT: u32 = 256;
 pub const MAX_SCAN_LIMIT: u32 = 4096;
@@ -14,7 +16,7 @@ pub struct OpenRequest {
     pub revision: Option<Timestamp>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct FileHandleId(pub Uuid);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -54,9 +56,14 @@ pub enum FileResponse<PeerId> {
     Opened {
         handle: FileHandleId,
         entry: Entry<PeerId>,
+        revision: Timestamp,
     },
-    Data(Bytes),
-    Written(u32),
+    ReadChunk(Bytes),
+    ReadEnd,
+    Written {
+        count: u32,
+        revision: Timestamp,
+    },
     Page(ScanPage<PeerId>),
     Closed,
     Error(FileServiceError),
@@ -77,28 +84,139 @@ pub enum FileServiceError {
     Io,
 }
 
-pub trait FileHandle<PeerId> {
+pub type FileFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+pub struct LocalFileHandle<'a, PeerId>
+where
+    PeerId:
+        Clone + core::fmt::Debug + Ord + serde::Serialize + serde::de::DeserializeOwned + 'static,
+{
+    file_system: &'a FileSystem<PeerId>,
+    path: String,
+    revision: Timestamp,
+    kind: FileKind,
+}
+
+impl<'a, PeerId> LocalFileHandle<'a, PeerId>
+where
+    PeerId:
+        Clone + core::fmt::Debug + Ord + serde::Serialize + serde::de::DeserializeOwned + 'static,
+{
+    pub(crate) fn new(
+        file_system: &'a FileSystem<PeerId>,
+        path: String,
+        revision: Timestamp,
+        kind: FileKind,
+    ) -> Self {
+        Self {
+            file_system,
+            path,
+            revision,
+            kind,
+        }
+    }
+
+    pub async fn close(self) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+pub trait FileHandle<PeerId>: Send + Sync {
     type Error: std::error::Error + 'static;
 
-    fn read(
-        &mut self,
+    fn read<'a>(
+        &'a mut self,
         offset: u64,
         length: u32,
-    ) -> impl core::future::Future<Output = Result<Bytes, Self::Error>> + Send;
+    ) -> FileFuture<'a, Result<Bytes, Self::Error>>;
 
-    fn write(
-        &mut self,
+    fn write<'a>(
+        &'a mut self,
         offset: u64,
         data: Bytes,
-    ) -> impl core::future::Future<Output = Result<u32, Self::Error>> + Send;
+    ) -> FileFuture<'a, Result<u32, Self::Error>>;
 
-    fn scan(
-        &mut self,
+    fn scan<'a>(
+        &'a mut self,
         cursor: Option<String>,
         limit: u32,
-    ) -> impl core::future::Future<Output = Result<ScanPage<PeerId>, Self::Error>> + Send;
+    ) -> FileFuture<'a, Result<ScanPage<PeerId>, Self::Error>>;
 
-    fn close(self) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send;
+    fn close(self: Box<Self>) -> FileFuture<'static, Result<(), Self::Error>>;
+}
+
+impl<PeerId> FileHandle<PeerId> for LocalFileHandle<'_, PeerId>
+where
+    PeerId: Clone
+        + core::fmt::Debug
+        + Ord
+        + serde::Serialize
+        + serde::de::DeserializeOwned
+        + Send
+        + Sync
+        + 'static,
+{
+    type Error = Error;
+
+    fn read<'a>(&'a mut self, offset: u64, length: u32) -> FileFuture<'a, Result<Bytes, Error>> {
+        Box::pin(async move {
+            if self.kind == FileKind::Directory {
+                return Err(Error::IsDirectory);
+            }
+            let mut stream = self.file_system.stream(&self.path, 64 * 1024).await?;
+            let mut remaining = offset;
+            let mut output = BytesMut::with_capacity(length as usize);
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk?;
+                if remaining >= chunk.len() as u64 {
+                    remaining -= chunk.len() as u64;
+                    continue;
+                }
+                let start = remaining as usize;
+                remaining = 0;
+                let available = &chunk[start..];
+                let take = available.len().min(length as usize - output.len());
+                output.extend_from_slice(&available[..take]);
+                if output.len() == length as usize {
+                    break;
+                }
+            }
+            Ok(output.freeze())
+        })
+    }
+
+    fn write<'a>(&'a mut self, offset: u64, data: Bytes) -> FileFuture<'a, Result<u32, Error>> {
+        Box::pin(async move {
+            if self.kind == FileKind::Directory {
+                return Err(Error::IsDirectory);
+            }
+            let written = self
+                .file_system
+                .write_at(&self.path, self.revision, offset, data)
+                .await?;
+            self.revision = self.file_system.revision(&self.path).await?;
+            Ok(written)
+        })
+    }
+
+    fn scan<'a>(
+        &'a mut self,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> FileFuture<'a, Result<ScanPage<PeerId>, Error>> {
+        Box::pin(async move {
+            if self.kind != FileKind::Directory {
+                return Err(Error::NotDirectory);
+            }
+            self.file_system
+                .scan(&self.path, cursor.as_deref(), limit)
+                .await
+        })
+    }
+
+    fn close(self: Box<Self>) -> FileFuture<'static, Result<(), Error>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 pub(crate) fn scan_limit(limit: u32) -> Result<usize, Error> {

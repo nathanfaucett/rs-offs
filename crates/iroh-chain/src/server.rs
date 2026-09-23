@@ -176,6 +176,23 @@ where
         &self.inner.endpoint
     }
 
+    pub async fn authorize(
+        &self,
+        root_id: RootId,
+        initiating_id: EndpointId,
+        authorization: &[u8],
+    ) -> bool {
+        self.inner
+            ._authorizer
+            .authorize(
+                root_id,
+                initiating_id,
+                self.inner.endpoint.id(),
+                authorization,
+            )
+            .await
+    }
+
     pub fn allowlist_hook(&self) -> AllowlistHook<A> {
         AllowlistHook::new(
             Arc::clone(&self.inner.allowed),

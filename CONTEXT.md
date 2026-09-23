@@ -18,7 +18,7 @@ A Delta is the set of records one replica is missing, derived from the peer's la
 
 ## File System
 
-The File System is the local-first replicated storage engine built on deckv. It exposes an FS-like API (open, read, write, stream, list), stores content under a stable file id, and keeps path metadata in deckv. It synchronizes metadata and obtains missing content from peers through a swappable transport.
+The File System is the local-first replicated storage engine built on deckv. It exposes a FUSE-like API (open a handle, read/write by offset, and scan directories), stores content under a stable file id, and keeps path metadata in deckv. It synchronizes metadata through a control-plane transport and obtains missing content through a separate file service.
 
 ## File Entry
 
@@ -38,7 +38,7 @@ A Merge Strategy determines how concurrent file updates reconcile. Ordinary file
 
 ## Transport
 
-A Transport moves typed sync messages between peers. It is defined by a trait (send, broadcast, subscribe) so the network stack can be swapped or mocked; an in-memory transport exists for tests. Metadata broadcast fans out to allowlisted peers over direct metadata-sync streams; file bytes use a separate direct file-transfer stream.
+A Transport is a control-plane message bus for typed sync messages. It is defined by a trait (send, broadcast, subscribe) so the network stack can be swapped or mocked; an in-memory transport exists for tests. Metadata broadcast fans out to allowlisted peers over direct metadata-sync streams. File access is a separate stateful service: open returns a handle, reads stream `Bytes`, writes use offsets and revisions, and directory scans use cursors.
 
 ## Endpoint ID
 

@@ -1,20 +1,14 @@
-use std::fmt::Debug;
+use std::{collections::HashMap, fmt::Debug};
 
 use deckv::{LwwRecord, Timestamp};
-use futures_util::StreamExt;
+
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::sync::broadcast;
-use uuid::Uuid;
 
 use crate::{
-    ByteStream, Error, FileKind, FileMeta, FileService, FileSystem, IncomingMessage, Residency,
+    Error, FileHandle, FileHandleId, FileMeta, FileOperation, FileResponse, FileServiceError,
+    FileSessionService, FileSystem, IncomingMessage, OpenRequest, Residency, SessionRequest,
 };
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct FileRequest {
-    pub file_id: Uuid,
-    pub revision: Timestamp,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(bound(deserialize = "PeerId: Ord + Deserialize<'de>"))]
@@ -27,16 +21,23 @@ pub enum SyncMessage<PeerId> {
     },
 }
 
+struct ServerHandle<'a, PeerId> {
+    handle: Box<dyn FileHandle<PeerId, Error = Error> + 'a>,
+    path: String,
+    revision: Timestamp,
+}
+
 pub struct MetadataSync<'a, PeerId, T>
 where
     PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + Send + Sync + 'static,
-    T: FileService<PeerId>,
+    T: FileSessionService<PeerId> + Sync + Clone + Send + 'static,
 {
     file_system: &'a FileSystem<PeerId>,
     transport: T,
     incoming: broadcast::Receiver<IncomingMessage<PeerId>>,
-    file_requests: broadcast::Receiver<crate::FileRequestMessage<PeerId>>,
+    sessions: broadcast::Receiver<SessionRequest<PeerId>>,
     changes: broadcast::Receiver<(String, LwwRecord<PeerId, FileMeta<PeerId>>)>,
+    handles: HashMap<FileHandleId, ServerHandle<'a, PeerId>>,
 }
 
 impl<PeerId> FileSystem<PeerId>
@@ -45,20 +46,20 @@ where
 {
     pub fn metadata_sync<T>(&self, transport: T) -> MetadataSync<'_, PeerId, T>
     where
-        T: FileService<PeerId>,
+        T: FileSessionService<PeerId> + Sync + Clone + Send + 'static,
     {
         MetadataSync {
             incoming: transport.subscribe(),
-            file_requests: transport.subscribe_file_requests(),
+            sessions: transport.subscribe_file_sessions(),
             changes: self.metadata.subscribe(),
             file_system: self,
             transport,
+            handles: HashMap::new(),
         }
     }
-
     pub async fn sync_peer<T>(&self, transport: T) -> Result<(), Error>
     where
-        T: FileService<PeerId>,
+        T: FileSessionService<PeerId> + Sync + Clone + Send + 'static,
     {
         self.metadata_sync(transport).run().await
     }
@@ -67,7 +68,7 @@ where
 impl<PeerId, T> MetadataSync<'_, PeerId, T>
 where
     PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + Send + Sync + 'static,
-    T: FileService<PeerId>,
+    T: FileSessionService<PeerId> + Sync + Clone + Send + 'static,
 {
     pub async fn announce(&self) -> Result<(), Error> {
         for peer in self.transport.peers() {
@@ -85,32 +86,9 @@ where
         Ok(())
     }
 
-    pub async fn stream(&self, path: &str) -> Result<ByteStream<Error>, Error> {
-        let entry = self.file_system.entry(path).await?;
-        if entry.meta.kind == FileKind::Directory {
-            return Err(Error::IsDirectory);
-        }
-        if let Ok(stream) = self.file_system.stream(path, 64 * 1024).await {
-            return Ok(Box::pin(stream));
-        }
-        let provider = self.provider(&entry.meta).await?;
-        let stream = self
-            .transport
-            .open_file(
-                provider,
-                FileRequest {
-                    file_id: entry.meta.file_id,
-                    revision: self.file_system.revision(path).await?,
-                },
-            )
-            .await
-            .map_err(|_| Error::Offline)?;
-        Ok(Box::pin(stream.map(|chunk| chunk.map_err(transport_error))))
-    }
-
     pub async fn fetch(&self, path: &str) -> Result<(), Error> {
         let entry = self.file_system.entry(path).await?;
-        if entry.meta.kind == FileKind::Directory {
+        if entry.meta.kind == crate::FileKind::Directory {
             return Err(Error::IsDirectory);
         }
         let revision = self.file_system.revision(path).await?;
@@ -123,22 +101,26 @@ where
             return Ok(());
         }
         let provider = self.provider(&entry.meta).await?;
-        let stream = self
+        let mut handle = self
             .transport
-            .open_file(
+            .open(
                 provider,
-                FileRequest {
-                    file_id: entry.meta.file_id,
-                    revision,
+                OpenRequest {
+                    path: path.to_owned(),
+                    revision: Some(revision),
                 },
             )
+            .await
+            .map_err(|_| Error::Offline)?;
+        let bytes = handle
+            .read(0, 16 * 1024 * 1024)
             .await
             .map_err(|_| Error::Offline)?;
         self.file_system
             .store_content(
                 entry.meta.file_id,
                 revision,
-                Box::pin(stream.map(|chunk| chunk.map_err(transport_error))),
+                Box::pin(futures_util::stream::once(async move { Ok(bytes) })),
             )
             .await
     }
@@ -154,21 +136,9 @@ where
         self.announce().await?;
         loop {
             tokio::select! {
-                result = self.changes.recv() => match result {
-                    Ok((path, record)) => self.transport.broadcast(SyncMessage::MetadataDelta { records: vec![(path, record)] }).await.map_err(transport_error)?,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
-                },
-                result = self.incoming.recv() => match result {
-                    Ok((peer, message)) => self.receive(peer, message).await?,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
-                },
-                result = self.file_requests.recv() => match result {
-                    Ok((_, request, sink)) => self.receive_file_request(request, sink).await?,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
-                },
+                result = self.changes.recv() => match result { Ok((path, record)) => self.transport.broadcast(SyncMessage::MetadataDelta { records: vec![(path, record)] }).await.map_err(transport_error)?, Err(broadcast::error::RecvError::Lagged(_)) => continue, Err(broadcast::error::RecvError::Closed) => return Ok(()) },
+                result = self.incoming.recv() => match result { Ok((peer, message)) => self.receive(peer, message).await?, Err(broadcast::error::RecvError::Lagged(_)) => continue, Err(broadcast::error::RecvError::Closed) => return Ok(()) },
+                result = self.sessions.recv() => match result { Ok((peer, operation, response)) => self.receive_session(peer, operation, response).await?, Err(broadcast::error::RecvError::Lagged(_)) => continue, Err(broadcast::error::RecvError::Closed) => return Ok(()) },
             }
         }
     }
@@ -185,8 +155,8 @@ where
         while let Ok((peer, message)) = self.incoming.try_recv() {
             self.receive(peer, message).await?;
         }
-        while let Ok((_, request, sink)) = self.file_requests.try_recv() {
-            self.receive_file_request(request, sink).await?;
+        while let Ok((peer, operation, response)) = self.sessions.try_recv() {
+            self.receive_session(peer, operation, response).await?;
         }
         Ok(())
     }
@@ -202,7 +172,6 @@ where
             .cloned()
             .ok_or(Error::NoReachableProvider)
     }
-
     async fn receive(&self, peer: PeerId, message: SyncMessage<PeerId>) -> Result<(), Error> {
         match message {
             SyncMessage::MetadataRequest { since } => {
@@ -219,30 +188,100 @@ where
                     .await
                     .map_err(transport_error)
             }
-            SyncMessage::MetadataDelta { records } => {
-                self.file_system
-                    .metadata
-                    .merge_peer_state(records.iter().cloned().collect())
-                    .await
-                    .map_err(metadata_error)?;
-                Ok(())
-            }
+            SyncMessage::MetadataDelta { records } => self
+                .file_system
+                .metadata
+                .merge_peer_state(records.iter().cloned().collect())
+                .await
+                .map_err(metadata_error),
         }
     }
 
-    async fn receive_file_request(
-        &self,
-        request: FileRequest,
-        sink: crate::FileSink,
+    async fn receive_session(
+        &mut self,
+        peer: PeerId,
+        operation: FileOperation,
+        response: crate::SessionResponse<PeerId>,
     ) -> Result<(), Error> {
-        let mut stream = self
-            .file_system
-            .content_stream(request.file_id, request.revision)
-            .await?;
-        while let Some(chunk) = stream.next().await {
-            if sink.send(chunk?).await.is_err() {
-                break;
+        let result: Result<Vec<FileResponse<PeerId>>, Error> = async {
+            match operation {
+                FileOperation::Open(request) => {
+                    let entry = self.file_system.entry(&request.path).await?;
+                    let revision = self.file_system.revision(&request.path).await?;
+                    if request
+                        .revision
+                        .is_some_and(|expected| expected != revision)
+                    {
+                        Err(Error::StaleRevision)
+                    } else {
+                        let path = request.path.clone();
+                        let id = self.transport.allocate_handle(&peer, &request);
+                        let handle = self.file_system.open_handle(request).await?;
+                        self.handles.insert(
+                            id.clone(),
+                            ServerHandle {
+                                handle: Box::new(handle),
+                                path,
+                                revision,
+                            },
+                        );
+                        Ok(vec![FileResponse::Opened {
+                            handle: id,
+                            entry,
+                            revision,
+                        }])
+                    }
+                }
+                FileOperation::Read {
+                    handle,
+                    offset,
+                    length,
+                } => {
+                    let handle = self.handles.get_mut(&handle).ok_or(Error::NotFound)?;
+                    let bytes = handle.handle.read(offset, length).await?;
+                    Ok(vec![FileResponse::ReadChunk(bytes), FileResponse::ReadEnd])
+                }
+                FileOperation::Write {
+                    handle,
+                    expected_revision,
+                    offset,
+                    data,
+                } => {
+                    let state = self.handles.get_mut(&handle).ok_or(Error::NotFound)?;
+                    if state.revision != expected_revision {
+                        Err(Error::StaleRevision)
+                    } else {
+                        let count = state.handle.write(offset, data).await?;
+                        state.revision = self.file_system.revision(&state.path).await?;
+                        Ok(vec![FileResponse::Written {
+                            count,
+                            revision: state.revision,
+                        }])
+                    }
+                }
+                FileOperation::Scan {
+                    handle,
+                    cursor,
+                    limit,
+                } => {
+                    let state = self.handles.get_mut(&handle).ok_or(Error::NotFound)?;
+                    Ok(vec![FileResponse::Page(
+                        state.handle.scan(cursor, limit).await?,
+                    )])
+                }
+                FileOperation::Close { handle } => {
+                    let state = self.handles.remove(&handle).ok_or(Error::NotFound)?;
+                    state.handle.close().await?;
+                    Ok(vec![FileResponse::Closed])
+                }
             }
+        }
+        .await;
+        let responses = result
+            .map_err(service_error)
+            .unwrap_or_else(|error| vec![FileResponse::Error(error)]);
+        for item in responses {
+            let _ = response.send(item).await;
         }
         Ok(())
     }
@@ -251,7 +290,19 @@ where
 fn metadata_error(error: impl std::fmt::Display) -> Error {
     Error::Metadata(error.to_string())
 }
-
 fn transport_error(error: impl std::fmt::Display) -> Error {
     Error::Metadata(format!("transport error: {error}"))
+}
+fn service_error(error: Error) -> FileServiceError {
+    match error {
+        Error::NotFound => FileServiceError::NotFound,
+        Error::NotDirectory => FileServiceError::NotDirectory,
+        Error::IsDirectory => FileServiceError::IsDirectory,
+        Error::InvalidScanCursor => FileServiceError::InvalidScanCursor,
+        Error::InvalidScanLimit => FileServiceError::InvalidScanLimit,
+        Error::StaleRevision => FileServiceError::StaleRevision,
+        Error::PassthroughWrite => FileServiceError::PassthroughWrite,
+        Error::ContentUnavailable => FileServiceError::ContentUnavailable,
+        _ => FileServiceError::Io,
+    }
 }

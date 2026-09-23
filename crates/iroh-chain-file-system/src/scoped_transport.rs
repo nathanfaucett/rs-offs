@@ -5,11 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use file_system::{
-    ByteStream, FileRequest, FileRequestMessage, FileService, IncomingMessage, SyncMessage,
-    Transport,
-};
-use futures_util::stream;
+use file_system::{FileOperation, IncomingMessage, SessionRequest, SyncMessage, Transport};
 use iroh::{
     EndpointAddr, EndpointId,
     endpoint::Connection,
@@ -18,14 +14,30 @@ use iroh::{
 use iroh_chain::{
     AllowedEndpointId, FILE_TRANSFER_ALPN, METADATA_SYNC_ALPN, RootAuthorizer, RootId, Server,
 };
+use serde::{Deserialize, Serialize};
 
 use tokio::{
-    io::AsyncWriteExt,
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::{broadcast, mpsc},
 };
 
 const INCOMING_CAPACITY: usize = 64;
 const MAX_METADATA_MESSAGE: usize = 16 * 1024 * 1024;
+const MAX_FILE_FRAME: usize = 16 * 1024 * 1024;
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct FileSessionRequestFrame {
+    pub(crate) root_id: [u8; 32],
+    pub(crate) authorization: Vec<u8>,
+    pub(crate) operation: FileOperation,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) enum FileSessionResponseFrame {
+    Response(file_system::FileResponse<EndpointId>),
+}
 
 type Message = IncomingMessage<EndpointId>;
 
@@ -64,21 +76,21 @@ where
     V: RootAuthorizer,
     P: AccessTokenProvider,
 {
-    inner: Arc<RootIrohTransportInner<A, V, P>>,
+    pub(crate) inner: Arc<RootIrohTransportInner<A, V, P>>,
 }
 
-struct RootIrohTransportInner<A, V, P>
+pub(crate) struct RootIrohTransportInner<A, V, P>
 where
     A: AllowedEndpointId,
     V: RootAuthorizer,
     P: AccessTokenProvider,
 {
-    manager: Server<A, V>,
-    root_id: RootId,
-    authorization: P,
-    peers: Mutex<BTreeMap<EndpointId, EndpointAddr>>,
-    incoming: broadcast::Sender<Message>,
-    file_requests: broadcast::Sender<file_system::FileRequestMessage<EndpointId>>,
+    pub(crate) manager: Server<A, V>,
+    pub(crate) root_id: RootId,
+    pub(crate) authorization: P,
+    pub(crate) peers: Mutex<BTreeMap<EndpointId, EndpointAddr>>,
+    pub(crate) incoming: broadcast::Sender<Message>,
+    pub(crate) sessions: broadcast::Sender<SessionRequest<EndpointId>>,
     peer_events: broadcast::Sender<EndpointId>,
 }
 
@@ -90,7 +102,7 @@ where
 {
     pub fn new(manager: Server<A, V>, root_id: RootId, authorization: P) -> Self {
         let (incoming, _) = broadcast::channel(INCOMING_CAPACITY);
-        let (file_requests, _) = broadcast::channel(INCOMING_CAPACITY);
+        let (sessions, _) = broadcast::channel(INCOMING_CAPACITY);
         let (peer_events, _) = broadcast::channel(INCOMING_CAPACITY);
         Self {
             inner: Arc::new(RootIrohTransportInner {
@@ -99,7 +111,7 @@ where
                 authorization,
                 peers: Mutex::new(BTreeMap::new()),
                 incoming,
-                file_requests,
+                sessions,
                 peer_events,
             }),
         }
@@ -111,8 +123,9 @@ where
             incoming: self.inner.incoming.clone(),
         };
         let files = FileHandler {
+            server: self.inner.manager.clone(),
             root_id: self.inner.root_id,
-            requests: self.inner.file_requests.clone(),
+            sessions: self.inner.sessions.clone(),
         };
         self.inner.manager.router(metadata, files)
     }
@@ -248,74 +261,6 @@ where
     }
 }
 
-impl<A, V, P> FileService<EndpointId> for RootIrohTransport<A, V, P>
-where
-    A: AllowedEndpointId,
-    V: RootAuthorizer,
-    P: AccessTokenProvider,
-{
-    async fn open_file(
-        &self,
-        peer: EndpointId,
-        request: FileRequest,
-    ) -> Result<ByteStream<Self::Error>, Self::Error> {
-        if !self.inner.manager.is_allowed(peer).await {
-            return Err(Error::new(
-                ErrorKind::PermissionDenied,
-                "Iroh peer is not allowed",
-            ));
-        }
-        let address = self
-            .inner
-            .peers
-            .lock()
-            .expect("peer lock poisoned")
-            .get(&peer)
-            .cloned()
-            .ok_or_else(|| Error::new(ErrorKind::NotConnected, "Iroh peer is not connected"))?;
-        let connection = self
-            .inner
-            .manager
-            .endpoint()
-            .connect(address, FILE_TRANSFER_ALPN)
-            .await
-            .map_err(Error::other)?;
-        let (mut send, mut recv) = connection.open_bi().await.map_err(Error::other)?;
-        let mut data = self.inner.root_id.as_bytes().to_vec();
-        data.extend(
-            postcard::to_allocvec(&request)
-                .map_err(|error| Error::new(ErrorKind::InvalidData, error))?,
-        );
-        send.write_all(&data).await.map_err(Error::other)?;
-        send.finish().map_err(Error::other)?;
-        let (sender, receiver) = mpsc::channel(INCOMING_CAPACITY);
-        tokio::spawn(async move {
-            let _connection = connection;
-            loop {
-                match recv.read_chunk(64 * 1024).await {
-                    Ok(Some(chunk)) => {
-                        if sender.send(Ok(chunk)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(error) => {
-                        let _ = sender.send(Err(Error::other(error))).await;
-                        break;
-                    }
-                }
-            }
-        });
-        Ok(Box::pin(stream::unfold(receiver, |mut receiver| async {
-            receiver.recv().await.map(|chunk| (chunk, receiver))
-        })))
-    }
-
-    fn subscribe_file_requests(&self) -> broadcast::Receiver<FileRequestMessage<EndpointId>> {
-        self.inner.file_requests.subscribe()
-    }
-}
-
 #[derive(Clone)]
 struct MetadataHandler {
     root_id: RootId,
@@ -323,9 +268,14 @@ struct MetadataHandler {
 }
 
 #[derive(Clone)]
-struct FileHandler {
+struct FileHandler<A, V>
+where
+    A: AllowedEndpointId,
+    V: RootAuthorizer,
+{
+    server: Server<A, V>,
     root_id: RootId,
-    requests: broadcast::Sender<file_system::FileRequestMessage<EndpointId>>,
+    sessions: broadcast::Sender<SessionRequest<EndpointId>>,
 }
 
 impl std::fmt::Debug for MetadataHandler {
@@ -380,7 +330,11 @@ impl ProtocolHandler for MetadataHandler {
     }
 }
 
-impl std::fmt::Debug for FileHandler {
+impl<A, V> std::fmt::Debug for FileHandler<A, V>
+where
+    A: AllowedEndpointId,
+    V: RootAuthorizer,
+{
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("FileHandler")
@@ -388,41 +342,107 @@ impl std::fmt::Debug for FileHandler {
     }
 }
 
-impl ProtocolHandler for FileHandler {
+impl<A, V> ProtocolHandler for FileHandler<A, V>
+where
+    A: AllowedEndpointId,
+    V: RootAuthorizer,
+{
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let remote_id = connection.remote_id();
         let (mut send, mut recv) = connection.accept_bi().await?;
-        let data = recv
-            .read_to_end(MAX_METADATA_MESSAGE)
-            .await
-            .map_err(|error| AcceptError::from(Error::other(error)))?;
-        if data.len() < 32 {
-            return Err(AcceptError::from(Error::new(
-                ErrorKind::InvalidData,
-                "file message is missing its root ID",
-            )));
-        }
-        let mut root_bytes = [0_u8; 32];
-        root_bytes.copy_from_slice(&data[..32]);
-        if RootId::new(root_bytes) != self.root_id {
-            return Err(AcceptError::from(Error::new(
-                ErrorKind::PermissionDenied,
-                "root ID mismatch",
-            )));
-        }
-        let request = postcard::from_bytes(&data[32..])
-            .map_err(|error| AcceptError::from(Error::new(ErrorKind::InvalidData, error)))?;
-        let (sender, mut receiver) = mpsc::channel(INCOMING_CAPACITY);
-        self.requests
-            .send((remote_id, request, sender))
-            .map_err(|_| AcceptError::from(Error::other("file request receiver closed")))?;
-        while let Some(chunk) = receiver.recv().await {
-            send.write_all(&chunk).await.map_err(Error::other)?;
+        loop {
+            let Some(frame) = read_frame::<_, FileSessionRequestFrame>(&mut recv)
+                .await
+                .map_err(AcceptError::from)?
+            else {
+                break;
+            };
+
+            if RootId::new(frame.root_id) != self.root_id {
+                return Err(AcceptError::from(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "root ID mismatch",
+                )));
+            }
+            if !self
+                .server
+                .authorize(self.root_id, remote_id, &frame.authorization)
+                .await
+            {
+                return Err(AcceptError::from(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "file session authorization rejected",
+                )));
+            }
+            let close = matches!(frame.operation, FileOperation::Close { .. });
+            let (sender, mut receiver) = mpsc::channel(INCOMING_CAPACITY);
+            self.sessions
+                .send((remote_id, frame.operation, sender))
+                .map_err(|_| AcceptError::from(Error::other("file session receiver closed")))?;
+
+            while let Some(response) = receiver.recv().await {
+                write_frame(&mut send, &FileSessionResponseFrame::Response(response))
+                    .await
+                    .map_err(AcceptError::from)?;
+            }
+            send.flush().await.map_err(Error::other)?;
+            if close {
+                break;
+            }
         }
         send.finish().map_err(Error::other)?;
         connection.closed().await;
         Ok(())
     }
+}
+
+pub(crate) async fn write_frame<W, T>(writer: &mut W, value: &T) -> Result<(), Error>
+where
+    W: AsyncWrite + Unpin,
+    T: Serialize,
+{
+    let payload =
+        postcard::to_allocvec(value).map_err(|error| Error::new(ErrorKind::InvalidData, error))?;
+    if payload.len() > MAX_FILE_FRAME {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "file frame exceeds maximum size",
+        ));
+    }
+    let length = u32::try_from(payload.len())
+        .map_err(|_| Error::new(ErrorKind::InvalidData, "file frame is too large"))?;
+    writer.write_u32_le(length).await.map_err(Error::other)?;
+    writer.write_all(&payload).await.map_err(Error::other)
+}
+
+pub(crate) async fn read_frame<R, T>(reader: &mut R) -> Result<Option<T>, Error>
+where
+    R: AsyncRead + Unpin,
+    T: for<'de> Deserialize<'de>,
+{
+    let mut prefix = [0_u8; 4];
+    if reader.read(&mut prefix[..1]).await.map_err(Error::other)? == 0 {
+        return Ok(None);
+    }
+    reader
+        .read_exact(&mut prefix[1..])
+        .await
+        .map_err(Error::other)?;
+    let length = u32::from_le_bytes(prefix) as usize;
+    if length > MAX_FILE_FRAME {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "file frame exceeds maximum size",
+        ));
+    }
+    let mut payload = vec![0_u8; length];
+    reader
+        .read_exact(&mut payload)
+        .await
+        .map_err(Error::other)?;
+    postcard::from_bytes(&payload)
+        .map(Some)
+        .map_err(|error| Error::new(ErrorKind::InvalidData, error))
 }
 
 async fn send_message(
@@ -446,3 +466,44 @@ async fn send_message(
 }
 
 const _: &[u8] = FILE_TRANSFER_ALPN;
+
+#[cfg(test)]
+mod tests {
+    use super::{FileSessionRequestFrame, FileSessionResponseFrame, read_frame, write_frame};
+    use file_system::{FileOperation, OpenRequest};
+    use tokio::io::duplex;
+
+    #[tokio::test]
+    async fn file_session_frames_round_trip_operations() {
+        let (mut writer, mut reader) = duplex(1024);
+        let request = FileSessionRequestFrame {
+            root_id: [7; 32],
+            authorization: Vec::new(),
+            operation: FileOperation::Open(OpenRequest {
+                path: "notes/today.txt".to_owned(),
+                revision: None,
+            }),
+        };
+        let response = FileSessionResponseFrame::Response(file_system::FileResponse::ReadEnd);
+        let request_to_write = request.clone();
+        let response_to_write = response.clone();
+        let task = tokio::spawn(async move {
+            write_frame(&mut writer, &request_to_write)
+                .await
+                .expect("write request");
+            write_frame(&mut writer, &response_to_write)
+                .await
+                .expect("write response");
+        });
+
+        assert_eq!(
+            read_frame(&mut reader).await.expect("read request"),
+            Some(request)
+        );
+        assert_eq!(
+            read_frame(&mut reader).await.expect("read response"),
+            Some(response)
+        );
+        task.await.expect("writer task");
+    }
+}

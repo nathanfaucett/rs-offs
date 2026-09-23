@@ -1,41 +1,43 @@
-use core::{error::Error, future::Future, pin::Pin};
+use core::{error::Error, future::Future};
 
-use bytes::Bytes;
-use futures_core::Stream;
 use tokio::sync::{broadcast, mpsc};
 
-use crate::{FileRequest, SyncMessage};
+use crate::{FileHandle, FileHandleId, FileOperation, FileResponse, OpenRequest, SyncMessage};
+use uuid::Uuid;
 
-pub type ByteStream<E> = Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send>>;
-pub type FileRequestMessage<PeerId> = (PeerId, FileRequest, FileSink);
-pub type FileSink = mpsc::Sender<Bytes>;
 pub type IncomingMessage<PeerId> = (PeerId, SyncMessage<PeerId>);
+
+pub type SessionResponse<PeerId> = mpsc::Sender<FileResponse<PeerId>>;
+pub type SessionRequest<PeerId> = (PeerId, FileOperation, SessionResponse<PeerId>);
 
 pub trait Transport<PeerId> {
     type Error: Error + 'static;
 
     fn peers(&self) -> Vec<PeerId>;
-
     fn send(
         &self,
         peer: PeerId,
         message: SyncMessage<PeerId>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-
     fn broadcast(
         &self,
         message: SyncMessage<PeerId>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-
     fn subscribe(&self) -> broadcast::Receiver<IncomingMessage<PeerId>>;
 }
 
-pub trait FileService<PeerId>: Transport<PeerId> {
-    fn open_file(
+pub trait FileSessionService<PeerId>: Transport<PeerId> {
+    type Handle: FileHandle<PeerId, Error = Self::Error> + Send;
+
+    fn open(
         &self,
         peer: PeerId,
-        request: FileRequest,
-    ) -> impl Future<Output = Result<ByteStream<Self::Error>, Self::Error>> + Send;
+        request: OpenRequest,
+    ) -> impl Future<Output = Result<Self::Handle, Self::Error>> + Send;
 
-    fn subscribe_file_requests(&self) -> broadcast::Receiver<FileRequestMessage<PeerId>>;
+    fn subscribe_file_sessions(&self) -> broadcast::Receiver<SessionRequest<PeerId>>;
+
+    fn allocate_handle(&self, _: &PeerId, _: &OpenRequest) -> FileHandleId {
+        FileHandleId(Uuid::now_v7())
+    }
 }

@@ -88,6 +88,26 @@ where
         Ok(())
     }
 
+    pub async fn open_handle(
+        &self,
+        request: crate::OpenRequest,
+    ) -> Result<crate::LocalFileHandle<'_, PeerId>, Error> {
+        let entry = self.entry(&request.path).await?;
+        let revision = self.revision(&request.path).await?;
+        if request
+            .revision
+            .is_some_and(|expected| expected != revision)
+        {
+            return Err(Error::StaleRevision);
+        }
+        Ok(crate::file_service::LocalFileHandle::new(
+            self,
+            request.path,
+            revision,
+            entry.meta.kind,
+        ))
+    }
+
     pub async fn entry(&self, path: &str) -> Result<Entry<PeerId>, Error> {
         directory(path)?;
         if path.is_empty() {
@@ -406,23 +426,15 @@ where
         Ok(content)
     }
 
-    pub(crate) async fn content_stream(
+    pub(crate) async fn store_content<S>(
         &self,
         file_id: Uuid,
         revision: deckv::Timestamp,
-    ) -> Result<ReadStream, Error> {
-        if !self.has_revision(file_id, revision).await? {
-            return Err(Error::ContentUnavailable);
-        }
-        ReadStream::new(File::open(self.content_path(file_id))?, 64 * 1024)
-    }
-
-    pub(crate) async fn store_content(
-        &self,
-        file_id: Uuid,
-        revision: deckv::Timestamp,
-        mut stream: crate::ByteStream<Error>,
-    ) -> Result<(), Error> {
+        stream: S,
+    ) -> Result<(), Error>
+    where
+        S: futures_core::Stream<Item = Result<Bytes, Error>>,
+    {
         if !self.has_revision(file_id, revision).await? {
             return Ok(());
         }
@@ -433,6 +445,7 @@ where
             Ok(file) => file,
             Err(error) => return Err(error),
         };
+        futures_util::pin_mut!(stream);
         while let Some(chunk) = stream.next().await {
             if let Err(error) = file.write_all(&chunk?) {
                 let _ = fs::remove_file(&temporary);

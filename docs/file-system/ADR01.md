@@ -88,7 +88,7 @@ trait Transport {
 - Default: iroh (encode to bytes on the wire).
 - In-memory transport for tests: pass `SyncMessage` by value (or `Arc`) with no serialization.
 
-Metadata sync carries requests and deltas. File content uses a separate provider-targeted stream keyed by `file_id` and the metadata-record revision; content is not carried in metadata messages.
+Metadata sync carries requests and deltas. File access uses a separate stateful provider-targeted file service: `Open` returns a handle, operations use bounded length-delimited frames, and content is streamed by `file_id` and metadata-record revision. Content is never carried in metadata messages or the control-plane Transport.
 
 ### 4. Sync engine
 

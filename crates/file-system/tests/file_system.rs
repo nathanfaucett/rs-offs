@@ -2,9 +2,10 @@ use std::{env, fs, sync::Arc};
 
 use bytes::Bytes;
 use file_system::{
-    Error, FileKind, FileRequest, FileService, FileSystem, MemoryNetwork, Residency,
+    Error, FileHandle, FileKind, FileSessionService, FileSystem, MemoryNetwork, OpenRequest,
+    Residency,
 };
-use futures_util::TryStreamExt;
+
 use uuid::Uuid;
 
 fn root() -> std::path::PathBuf {
@@ -137,8 +138,11 @@ async fn passthrough_fetch_materializes_before_full_residency() {
     let right = FileSystem::open(&right_root, 2_u8).unwrap();
     full(&left).await;
     left.write("notes.txt", b"content").await.unwrap();
-    let mut left_sync = left.metadata_sync(network.transport(1));
-    let mut right_sync = right.metadata_sync(network.transport(2));
+    let left_transport = network.transport(1);
+    let right_transport = network.transport(2);
+    let right_sender = right_transport.clone();
+    let mut left_sync = left.metadata_sync(left_transport);
+    let mut right_sync = right.metadata_sync(right_transport);
 
     right_sync.announce().await.unwrap();
     left_sync.pump().await.unwrap();
@@ -148,12 +152,21 @@ async fn passthrough_fetch_materializes_before_full_residency() {
         Err(Error::ContentUnavailable)
     ));
 
-    let stream = right_sync.stream("notes.txt").await.unwrap();
+    let mut handle = right_sender
+        .open(
+            1,
+            OpenRequest {
+                path: "notes.txt".to_owned(),
+                revision: None,
+            },
+        )
+        .await
+        .unwrap();
     left_sync.pump().await.unwrap();
-    assert_eq!(
-        stream.try_collect::<Vec<_>>().await.unwrap().concat(),
-        b"content"
-    );
+    let pending = handle.read(0, 1024);
+    left_sync.pump().await.unwrap();
+    let content = pending.await.unwrap();
+    assert_eq!(content, b"content".as_slice());
     assert!(matches!(
         right.set_residency("notes.txt", Residency::Full).await,
         Err(Error::ContentUnavailable)
@@ -225,34 +238,45 @@ async fn syncs_content_and_rejects_stale_responses() {
 
     full(&left).await;
     full(&right).await;
-    let entry = left.write("file.txt", b"old").await.unwrap();
+    left.write("file.txt", b"old").await.unwrap();
     let stale_revision = left.revision("file.txt").await.unwrap();
     let mut left_sync = left.metadata_sync(left_transport);
     let mut right_sync = right.metadata_sync(right_transport);
     synchronize(&mut left_sync, &mut right_sync).await;
-    let stream = right_sync.stream("file.txt").await.unwrap();
-    left_sync.pump().await.unwrap();
-    assert_eq!(
-        stream.try_collect::<Vec<_>>().await.unwrap().concat(),
-        b"old"
-    );
-
-    left.write("file.txt", b"new").await.unwrap();
-    synchronize(&mut left_sync, &mut right_sync).await;
-    let _stream = right_sender
-        .open_file(
+    let mut handle = right_sender
+        .open(
             1,
-            FileRequest {
-                file_id: entry.meta.file_id,
-                revision: stale_revision,
+            OpenRequest {
+                path: "file.txt".to_owned(),
+                revision: Some(stale_revision),
             },
         )
         .await
         .unwrap();
-    assert!(matches!(
-        left_sync.pump().await,
-        Err(file_system::Error::ContentUnavailable)
-    ));
+    left_sync.pump().await.unwrap();
+    let pending = handle.read(0, 1024);
+    left_sync.pump().await.unwrap();
+    let content = pending.await.unwrap();
+    assert_eq!(content, b"old".as_slice());
+
+    left.write("file.txt", b"new").await.unwrap();
+    synchronize(&mut left_sync, &mut right_sync).await;
+    let stale = right_sender
+        .open(
+            1,
+            OpenRequest {
+                path: "file.txt".to_owned(),
+                revision: Some(stale_revision),
+            },
+        )
+        .await;
+    let mut stale = stale.unwrap();
+    left_sync.pump().await.unwrap();
+    let mut write = Box::pin(stale.write(0, Bytes::from_static(b"x")));
+    tokio::select! {
+        result = &mut write => assert!(result.is_err()),
+        _ = tokio::task::yield_now() => { left_sync.pump().await.unwrap(); assert!(write.await.is_err()); }
+    }
     assert_eq!(
         right.entry("file.txt").await.unwrap().meta,
         left.entry("file.txt").await.unwrap().meta
@@ -275,7 +299,7 @@ async fn full_peer_serves_content_to_passthrough_peer() {
     let left_transport = network.transport(1);
     let right_transport = network.transport(2);
     let mut left_sync = left.metadata_sync(left_transport);
-    let mut right_sync = right.metadata_sync(right_transport);
+    let mut right_sync = right.metadata_sync(right_transport.clone());
     synchronize(&mut left_sync, &mut right_sync).await;
     right
         .set_residency("", Residency::Passthrough)
@@ -286,10 +310,21 @@ async fn full_peer_serves_content_to_passthrough_peer() {
         Err(Error::ContentUnavailable)
     ));
 
-    let stream = right_sync.stream("file.txt").await.unwrap();
+    let mut handle = right_transport
+        .open(
+            1,
+            OpenRequest {
+                path: "file.txt".to_owned(),
+                revision: None,
+            },
+        )
+        .await
+        .unwrap();
     left_sync.pump().await.unwrap();
-    let content = stream.try_collect::<Vec<_>>().await.unwrap();
-    assert_eq!(content.concat(), b"content");
+    let pending = handle.read(0, 1024);
+    left_sync.pump().await.unwrap();
+    let content = pending.await.unwrap();
+    assert_eq!(content, b"content".as_slice());
     assert!(matches!(
         right.read("file.txt").await,
         Err(Error::ContentUnavailable)
@@ -312,24 +347,22 @@ async fn reports_unavailable_requested_content() {
     let mut left_sync = left.metadata_sync(left_transport);
     let _right_sync = right.metadata_sync(right_transport);
 
-    let _stream = right_sender
-        .open_file(
+    let missing = right_sender
+        .open(
             1,
-            FileRequest {
-                file_id: Uuid::now_v7(),
-                revision: deckv::Timestamp {
-                    physical: 0,
-                    logical: 0,
-                },
+            OpenRequest {
+                path: "missing.txt".to_owned(),
+                revision: None,
             },
         )
-        .await
-        .unwrap();
-
-    assert!(matches!(
-        left_sync.pump().await,
-        Err(file_system::Error::ContentUnavailable)
-    ));
+        .await;
+    let mut handle = missing.unwrap();
+    left_sync.pump().await.unwrap();
+    let mut read = Box::pin(handle.read(0, 1));
+    tokio::select! {
+        result = &mut read => assert!(result.is_err()),
+        _ = tokio::task::yield_now() => { left_sync.pump().await.unwrap(); assert!(read.await.is_err()); }
+    }
     fs::remove_dir_all(left_root).unwrap();
     fs::remove_dir_all(right_root).unwrap();
 }
@@ -356,6 +389,43 @@ async fn write_at_requires_current_revision_and_preserves_offset_semantics() {
         .await;
     assert!(matches!(stale, Err(Error::StaleRevision)));
     assert_eq!(file_system.read("file.txt").await.unwrap(), b"hillo");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn local_file_handle_supports_offset_io_and_scans() {
+    let root = root();
+    let file_system = FileSystem::open(&root, 7_u8).unwrap();
+    full(&file_system).await;
+    file_system.write("file.txt", b"hello").await.unwrap();
+    file_system.write("other.txt", b"world").await.unwrap();
+    file_system.create_dir("dir").await.unwrap();
+    file_system.write("dir/a.txt", b"a").await.unwrap();
+    file_system.write("dir/b.txt", b"b").await.unwrap();
+
+    let mut handle = file_system
+        .open_handle(OpenRequest {
+            path: "file.txt".to_owned(),
+            revision: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(handle.read(1, 3).await.unwrap(), Bytes::from_static(b"ell"));
+    assert_eq!(handle.write(1, Bytes::from_static(b"i")).await.unwrap(), 1);
+    assert_eq!(file_system.read("file.txt").await.unwrap(), b"hillo");
+    handle.close().await.unwrap();
+
+    let mut directory = file_system
+        .open_handle(OpenRequest {
+            path: "dir".to_owned(),
+            revision: None,
+        })
+        .await
+        .unwrap();
+    let page = directory.scan(None, 1).await.unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert!(page.next.is_some());
+    directory.close().await.unwrap();
     fs::remove_dir_all(root).unwrap();
 }
 

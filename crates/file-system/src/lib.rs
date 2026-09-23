@@ -14,14 +14,14 @@ mod transport;
 pub use error::Error;
 pub use file_meta::{FileKind, FileMeta};
 pub use file_service::{
-    DEFAULT_SCAN_LIMIT, FileHandle, FileHandleId, FileOperation, FileResponse, FileServiceError,
-    OpenRequest, ScanPage,
+    DEFAULT_SCAN_LIMIT, FileFuture, FileHandle, FileHandleId, FileOperation, FileResponse,
+    FileServiceError, LocalFileHandle, OpenRequest, ScanPage,
 };
 pub use file_system::{Entry, FileSystem};
 pub use memory_transport::{MemoryNetwork, MemoryTransport, MemoryTransportError};
 pub use residency::Residency;
 pub use stream::ReadStream;
-pub use sync::{FileRequest, MetadataSync, SyncMessage};
+pub use sync::{MetadataSync, SyncMessage};
 pub use transport::{
-    ByteStream, FileRequestMessage, FileService, FileSink, IncomingMessage, Transport,
+    FileSessionService, IncomingMessage, SessionRequest, SessionResponse, Transport,
 };
