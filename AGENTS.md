@@ -13,6 +13,7 @@
 - Prefer explicit imports and minimal dependencies.
 - Avoid glob imports and hard-coded absolute paths.
 - No non-essential comments; prefer refactoring over comments.
+- Prefer expect("message") over unwrap(); always provide a clear message explaining the invariant.
 
 ## Module Organization
 
@@ -43,4 +44,4 @@
 ## CRAP (Complexity, Risk, and Priority)
 
 - Assess new features and changes for complexity, risk, and priority before implementation.
-- Use `cargo crap --all-targets` to evaluate code complexity and identify areas for refactoring.
+- Use `just crap` to evaluate code complexity and identify areas for refactoring.

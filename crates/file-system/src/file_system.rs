@@ -3,14 +3,16 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 use bytes::Bytes;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use deckv::{RedbStorage, Store};
+use btree_redb::{Bytes as TreeBytes, RedbByteBTree, table_definition};
+use kv::KvStore;
+use redb::{Database, ReadableDatabase};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -21,8 +23,7 @@ use crate::{
     residency::ResidencyRules,
 };
 
-pub(crate) type MetadataStore<PeerId> =
-    Store<PeerId, String, FileMeta<PeerId>, RedbStorage<PeerId, String, FileMeta<PeerId>>>;
+pub(crate) type MetadataStore = KvStore<RedbByteBTree>;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound(deserialize = "PeerId: Ord + Deserialize<'de>"))]
@@ -36,9 +37,10 @@ where
     PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + 'static,
 {
     content_root: PathBuf,
-    pub(crate) metadata: MetadataStore<PeerId>,
+    pub(crate) metadata: MetadataStore,
     node_id: PeerId,
     residency: Mutex<ResidencyRules>,
+    pub(crate) changes: broadcast::Sender<()>,
 }
 
 impl<PeerId> FileSystem<PeerId>
@@ -50,19 +52,38 @@ where
         fs::create_dir_all(root)?;
         let content_root = root.join(".data");
         fs::create_dir_all(&content_root)?;
-        let database = redb::Database::create(root.join("metadata.redb"))
-            .map_err(|error| Error::Metadata(error.to_string()))?;
-        let metadata = Store::new(
-            node_id.clone(),
-            RedbStorage::open(database).map_err(|error| Error::Metadata(error.to_string()))?,
-            broadcast::channel(16).0,
-        );
+        let metadata_path = root.join("metadata.redb");
+        let existed = metadata_path.exists();
+        let database = if existed {
+            Database::open(&metadata_path)
+        } else {
+            Database::create(&metadata_path)
+        }
+        .map_err(metadata_error)?;
+        if existed {
+            let transaction = database.begin_read().map_err(metadata_error)?;
+            if transaction
+                .open_table(table_definition::<TreeBytes, Vec<u8>>("metadata"))
+                .is_err()
+            {
+                return Err(metadata_error("legacy metadata store is not supported"));
+            }
+        } else {
+            let transaction = database.begin_write().map_err(metadata_error)?;
+            transaction
+                .open_table(table_definition::<TreeBytes, Vec<u8>>("metadata"))
+                .map_err(metadata_error)?;
+            transaction.commit().map_err(metadata_error)?;
+        }
+        let metadata = KvStore::new(RedbByteBTree::new(Arc::new(database), "metadata"));
+        let changes = broadcast::channel(16).0;
 
         Ok(Self {
             content_root,
             metadata,
             node_id,
             residency: Mutex::new(ResidencyRules::default()),
+            changes,
         })
     }
 
@@ -113,10 +134,8 @@ where
         if path.is_empty() {
             return Err(Error::NotFound);
         }
-        self.metadata
-            .get(&path.to_owned())
-            .await
-            .map_err(metadata_error)?
+        self.get(path)
+            .await?
             .map(|meta| Entry {
                 path: path.to_owned(),
                 meta,
@@ -153,11 +172,12 @@ where
         file(path)?;
         self.require_full(path)?;
         self.ensure_parent_directories(path).await?;
-        let meta = match self.get(path).await? {
+        let mut meta = match self.get(path).await? {
             Some(meta) if meta.kind == FileKind::Directory => return Err(Error::IsDirectory),
             Some(meta) => meta,
             None => FileMeta::file(Uuid::now_v7(), self.node_id.clone()),
         };
+        meta.revision = Uuid::now_v7();
         write_file(&self.content_path(meta.file_id), content)?;
         self.put(path, meta.clone()).await?;
         Ok(Entry {
@@ -169,7 +189,7 @@ where
     pub async fn write_at(
         &self,
         path: &str,
-        expected_revision: deckv::Timestamp,
+        expected_revision: Uuid,
         offset: u64,
         data: Bytes,
     ) -> Result<u32, Error> {
@@ -194,7 +214,9 @@ where
         content.seek(SeekFrom::Start(offset))?;
         content.write_all(&data)?;
         content.sync_all()?;
-        self.put(path, entry.meta).await?;
+        let mut meta = entry.meta;
+        meta.revision = Uuid::now_v7();
+        self.put(path, meta).await?;
         Ok(length)
     }
 
@@ -210,7 +232,9 @@ where
             .open(self.content_path(entry.meta.file_id))?;
         file.write_all(content)?;
         file.sync_all()?;
-        self.put(path, entry.meta).await
+        let mut meta = entry.meta;
+        meta.revision = Uuid::now_v7();
+        self.put(path, meta).await
     }
 
     pub async fn create_dir(&self, path: &str) -> Result<Entry<PeerId>, Error> {
@@ -248,12 +272,9 @@ where
             format!("{path}/")
         };
         let mut entries = self
-            .metadata
-            .entries()
-            .await
-            .map_err(metadata_error)?
+            .all_metadata()
+            .await?
             .into_iter()
-            .filter_map(|(entry_path, record)| record.value.map(|meta| (entry_path, meta)))
             .filter(|(entry_path, _)| {
                 entry_path
                     .strip_prefix(&prefix)
@@ -276,10 +297,11 @@ where
 
     pub async fn delete(&self, path: &str) -> Result<(), Error> {
         let _ = self.entry(path).await?;
-        self.metadata
-            .delete(path.to_owned())
-            .await
-            .map_err(metadata_error)
+        let mut transaction = self.metadata.transaction().await.map_err(metadata_error)?;
+        transaction.delete(path).await.map_err(metadata_error)?;
+        transaction.commit().await.map_err(metadata_error)?;
+        let _ = self.changes.send(());
+        Ok(())
     }
 
     pub async fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
@@ -296,21 +318,35 @@ where
         let mut moves = vec![(from.to_owned(), to.to_owned(), entry.meta)];
         if moves[0].2.kind == FileKind::Directory {
             let prefix = format!("{from}/");
-            for (path, record) in self.metadata.entries().await.map_err(metadata_error)? {
-                if let Some(meta) = record.value.filter(|_| path.starts_with(&prefix)) {
+            for (path, meta) in self.all_metadata().await? {
+                if path.starts_with(&prefix) {
                     moves.push((path.clone(), format!("{to}{}", &path[from.len()..]), meta));
                 }
             }
         }
-        for (_, destination, meta) in &moves {
+        for (_, destination, _) in &moves {
             if destination != to && self.get(destination).await?.is_some() {
                 return Err(Error::AlreadyExists);
             }
-            self.put(destination, meta.clone()).await?;
+        }
+        let mut transaction = self.metadata.transaction().await.map_err(metadata_error)?;
+        for (_, destination, meta) in &moves {
+            let mut meta = meta.clone();
+            meta.revision = Uuid::now_v7();
+            transaction
+                .set(
+                    destination,
+                    postcard::to_allocvec(&meta).map_err(metadata_error)?,
+                    None,
+                )
+                .await
+                .map_err(metadata_error)?;
         }
         for (source, _, _) in moves {
-            self.metadata.delete(source).await.map_err(metadata_error)?;
+            transaction.delete(&source).await.map_err(metadata_error)?;
         }
+        transaction.commit().await.map_err(metadata_error)?;
+        let _ = self.changes.send(());
         Ok(())
     }
 
@@ -321,11 +357,10 @@ where
     }
 
     async fn verify_content(&self, path: &str) -> Result<(), Error> {
-        for (entry_path, record) in self.metadata.entries().await.map_err(metadata_error)? {
+        for (entry_path, meta) in self.all_metadata().await? {
             if within(path, &entry_path)
-                && record.value.is_some_and(|meta| {
-                    meta.kind == FileKind::File && !self.content_path(meta.file_id).is_file()
-                })
+                && meta.kind == FileKind::File
+                && !self.content_path(meta.file_id).is_file()
             {
                 return Err(Error::ContentUnavailable);
             }
@@ -334,22 +369,15 @@ where
     }
 
     async fn evict_unreferenced(&self, path: &str) -> Result<(), Error> {
-        let entries = self.metadata.entries().await.map_err(metadata_error)?;
-        for (entry_path, record) in &entries {
-            if within(path, entry_path)
-                && record
-                    .value
-                    .as_ref()
-                    .is_some_and(|meta| meta.kind == FileKind::File)
-            {
-                let file_id = record.value.as_ref().expect("checked above").file_id;
-                let retained = entries.iter().any(|(other_path, other_record)| {
+        let entries = self.all_metadata().await?;
+        for (entry_path, meta) in &entries {
+            if within(path, entry_path) && meta.kind == FileKind::File {
+                let file_id = meta.file_id;
+                let retained = entries.iter().any(|(other_path, other)| {
                     other_path != entry_path
-                        && other_record.value.as_ref().is_some_and(|other| {
-                            other.kind == FileKind::File
-                                && other.file_id == file_id
-                                && matches!(self.residency(other_path), Ok(Residency::Full))
-                        })
+                        && other.kind == FileKind::File
+                        && other.file_id == file_id
+                        && matches!(self.residency(other_path), Ok(Residency::Full))
                 });
                 if !retained
                     && let Err(error) = fs::remove_file(self.content_path(file_id))
@@ -386,32 +414,42 @@ where
     }
 
     pub(crate) async fn get(&self, path: &str) -> Result<Option<FileMeta<PeerId>>, Error> {
-        self.metadata
-            .get(&path.to_owned())
+        let transaction = self.metadata.transaction().await.map_err(metadata_error)?;
+        transaction
+            .get(path, 0)
             .await
-            .map_err(metadata_error)
+            .map_err(metadata_error)?
+            .map(|bytes| postcard::from_bytes(&bytes).map_err(metadata_error))
+            .transpose()
+    }
+
+    async fn all_metadata(&self) -> Result<Vec<(String, FileMeta<PeerId>)>, Error> {
+        let transaction = self.metadata.transaction().await.map_err(metadata_error)?;
+        transaction
+            .scan_all(0)
+            .await
+            .map_err(metadata_error)?
+            .into_iter()
+            .map(|(path, bytes)| {
+                postcard::from_bytes(&bytes)
+                    .map(|meta| (path, meta))
+                    .map_err(metadata_error)
+            })
+            .collect()
     }
 
     fn content_path(&self, file_id: Uuid) -> PathBuf {
         self.content_root.join(file_id.to_string())
     }
 
-    pub async fn revision(&self, path: &str) -> Result<deckv::Timestamp, Error> {
-        self.metadata
-            .entries()
-            .await
-            .map_err(metadata_error)?
-            .into_iter()
-            .find(|(entry_path, _)| entry_path == path)
-            .map(|(_, record)| record.timestamp)
+    pub async fn revision(&self, path: &str) -> Result<Uuid, Error> {
+        self.get(path)
+            .await?
+            .map(|meta| meta.revision)
             .ok_or(Error::NotFound)
     }
 
-    pub(crate) async fn content(
-        &self,
-        file_id: Uuid,
-        revision: deckv::Timestamp,
-    ) -> Result<Vec<u8>, Error> {
+    pub(crate) async fn content(&self, file_id: Uuid, revision: Uuid) -> Result<Vec<u8>, Error> {
         if !self.has_revision(file_id, revision).await? {
             return Err(Error::ContentUnavailable);
         }
@@ -429,7 +467,7 @@ where
     pub(crate) async fn store_content<S>(
         &self,
         file_id: Uuid,
-        revision: deckv::Timestamp,
+        revision: Uuid,
         stream: S,
     ) -> Result<(), Error>
     where
@@ -453,26 +491,35 @@ where
             }
         }
         file.sync_all()?;
+        if !self.has_revision(file_id, revision).await? {
+            let _ = fs::remove_file(&temporary);
+            return Ok(());
+        }
         fs::rename(temporary, path)?;
         Ok(())
     }
 
-    async fn has_revision(&self, file_id: Uuid, revision: deckv::Timestamp) -> Result<bool, Error> {
-        let entries = self.metadata.entries().await.map_err(metadata_error)?;
-        Ok(entries.into_iter().any(|(_, record)| {
-            record.timestamp == revision
-                && record
-                    .value
-                    .as_ref()
-                    .is_some_and(|meta| meta.file_id == file_id)
-        }))
+    async fn has_revision(&self, file_id: Uuid, revision: Uuid) -> Result<bool, Error> {
+        Ok(self
+            .all_metadata()
+            .await?
+            .into_iter()
+            .any(|(_, meta)| meta.revision == revision && meta.file_id == file_id))
     }
 
     async fn put(&self, path: &str, meta: FileMeta<PeerId>) -> Result<(), Error> {
-        self.metadata
-            .insert(path.to_owned(), meta)
+        let mut transaction = self.metadata.transaction().await.map_err(metadata_error)?;
+        transaction
+            .set(
+                path,
+                postcard::to_allocvec(&meta).map_err(metadata_error)?,
+                None,
+            )
             .await
-            .map_err(metadata_error)
+            .map_err(metadata_error)?;
+        transaction.commit().await.map_err(metadata_error)?;
+        let _ = self.changes.send(());
+        Ok(())
     }
 }
 

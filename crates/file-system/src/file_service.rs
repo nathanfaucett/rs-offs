@@ -1,6 +1,6 @@
 use bytes::{Bytes, BytesMut};
 use core::{future::Future, pin::Pin};
-use deckv::Timestamp;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -13,7 +13,7 @@ pub const MAX_SCAN_LIMIT: u32 = 4096;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OpenRequest {
     pub path: String,
-    pub revision: Option<Timestamp>,
+    pub revision: Option<Uuid>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -36,7 +36,7 @@ pub enum FileOperation {
     },
     Write {
         handle: FileHandleId,
-        expected_revision: Timestamp,
+        expected_revision: Uuid,
         offset: u64,
         data: Bytes,
     },
@@ -56,13 +56,13 @@ pub enum FileResponse<PeerId> {
     Opened {
         handle: FileHandleId,
         entry: Entry<PeerId>,
-        revision: Timestamp,
+        revision: Uuid,
     },
     ReadChunk(Bytes),
     ReadEnd,
     Written {
         count: u32,
-        revision: Timestamp,
+        revision: Uuid,
     },
     Page(ScanPage<PeerId>),
     Closed,
@@ -93,7 +93,7 @@ where
 {
     file_system: &'a FileSystem<PeerId>,
     path: String,
-    revision: Timestamp,
+    revision: Uuid,
     kind: FileKind,
 }
 
@@ -105,7 +105,7 @@ where
     pub(crate) fn new(
         file_system: &'a FileSystem<PeerId>,
         path: String,
-        revision: Timestamp,
+        revision: Uuid,
         kind: FileKind,
     ) -> Self {
         Self {

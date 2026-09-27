@@ -645,6 +645,75 @@ async fn persists_metadata_content_and_directory_markers() {
 }
 
 #[tokio::test]
+async fn reconnect_exchange_recovers_missed_updates_and_deletes() {
+    let left_root = root();
+    let right_root = root();
+    let network = MemoryNetwork::new(16);
+    let left = FileSystem::open(&left_root, 1_u8).unwrap();
+    let right = FileSystem::open(&right_root, 2_u8).unwrap();
+    full(&left).await;
+    full(&right).await;
+    left.write("keep.txt", b"initial").await.unwrap();
+    left.write("remove.txt", b"removed").await.unwrap();
+
+    let mut left_sync = left.metadata_sync(network.transport(1));
+    let mut right_sync = right.metadata_sync(network.transport(2));
+    synchronize(&mut left_sync, &mut right_sync).await;
+
+    left.write("keep.txt", b"updated").await.unwrap();
+    left.delete("remove.txt").await.unwrap();
+    right_sync.announce().await.unwrap();
+    left_sync.pump().await.unwrap();
+    right_sync.pump().await.unwrap();
+
+    assert_eq!(
+        right.entry("keep.txt").await.unwrap().meta,
+        left.entry("keep.txt").await.unwrap().meta
+    );
+    assert!(matches!(
+        right.entry("remove.txt").await,
+        Err(Error::NotFound)
+    ));
+    fs::remove_dir_all(left_root).unwrap();
+    fs::remove_dir_all(right_root).unwrap();
+}
+
+#[tokio::test]
+async fn writes_produce_persistent_distinct_revisions() {
+    let root = root();
+    let file_system = FileSystem::open(&root, 1_u8).unwrap();
+    full(&file_system).await;
+
+    let first = file_system.write("file.txt", b"one").await.unwrap();
+    let second = file_system.write("file.txt", b"two").await.unwrap();
+    assert_ne!(first.meta.revision, second.meta.revision);
+    drop(file_system);
+
+    let reopened = FileSystem::open(&root, 1_u8).unwrap();
+    assert_eq!(
+        reopened.revision("file.txt").await.unwrap(),
+        second.meta.revision
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn refuses_legacy_metadata_tables() {
+    let root = root();
+    fs::create_dir_all(&root).unwrap();
+    let database = redb::Database::create(root.join("metadata.redb")).unwrap();
+    let transaction = database.begin_write().unwrap();
+    transaction
+        .open_table(redb::TableDefinition::<&str, &[u8]>::new("clock"))
+        .unwrap();
+    transaction.commit().unwrap();
+    drop(database);
+
+    assert!(FileSystem::open(&root, 1_u8).is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn sync_peer_continuously_converges_metadata() {
     let left_root = root();
     let right_root = root();

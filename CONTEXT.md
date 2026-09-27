@@ -1,61 +1,25 @@
 # Domain Context
 
-## deckv
+## KV Store
 
-deckv is the embedded, offline-first, eventually consistent key-value store. Every value is a Last-Writer-Wins record; deletes are tombstones. Storage backends and transports are swappable; there is no central coordinator and no shared root.
-
-## Last-Writer-Wins (LWW)
-
-LWW is the only merge strategy in deckv. Concurrent updates on one key resolve by timestamp, then replica id tie-break. The loser is discarded; no conflict copies are kept.
-
-## Tombstone
-
-A Tombstone is a replicated deleted record. It prevents a deleted key from returning when replicas synchronize. Tombstones remain until garbage collection removes them.
-
-## Delta
-
-A Delta is the set of records one replica is missing, derived from the peer's latest known timestamp. Deltas drive anti-entropy synchronization.
+`kv` stores opaque byte values under UTF-8 keys. Each key has UUIDv7 generations and an Automerge-backed history. Deletes are retained as tombstones. Snapshot exchange is explicit; transport and peer state belong to the caller. Same-generation divergent histories are rejected rather than resolved with LWW.
 
 ## File System
 
-The File System is the local-first replicated storage engine built on deckv. It exposes a FUSE-like API (open a handle, read/write by offset, and scan directories), stores content under a stable file id, and keeps path metadata in deckv. It synchronizes metadata through a control-plane transport and obtains missing content through a separate file service.
+The File System is a local-first replicated storage engine. It exposes open/read/write/scan operations, stores content under a stable file id, and stores path metadata in `kv`. Metadata synchronization exchanges complete winning-key snapshots, including tombstones. Missing content is fetched through a separate file service.
 
 ## File Entry
 
-A File Entry is the replicated metadata for one path: file id, kind, providers, locality, deletion state, and mode/owner/group. The file id is stable across renames; the path key is not.
+A File Entry is the metadata for one path: stable file id, kind, providers, locality, mode, owner, group, and content revision. The file id survives overwrite and rename; the path is the KV key. Deletes are KV tombstones rather than a field in `FileMeta`.
 
 ## Content Revision
 
-A Content Revision is the version of file bytes represented by the current metadata record. It is used with the file id to request a specific version from a provider. A checksum may verify a completed stream, but is not the protocol identity or storage key.
+A Content Revision is a persisted UUIDv7 in `FileMeta`. It changes on each metadata/content write, is independent of the KV generation, and is used for stale-write checks and content requests.
 
 ## Residency
 
-Residency is a device-local choice per path: Full or Passthrough. Full stores metadata and content locally. Passthrough stores and synchronizes metadata only, and obtains content from an online Full peer when read; it is read-only. The most-specific rule applies. Residency is never synchronized.
-
-## Merge Strategy
-
-A Merge Strategy determines how concurrent file updates reconcile. Ordinary files use LWW metadata. Known document types (e.g. `.automerge`, `.am`) use a document-merging plugin whose result feeds back into the LWW record. The strategy is derived from file type, not stored per file.
+Residency is a device-local choice per path: Full or Passthrough. Full stores metadata and content locally. Passthrough stores metadata only and obtains content from an online Full peer; it is read-only. The most-specific rule applies. Residency is never synchronized.
 
 ## Transport
 
-A Transport is a control-plane message bus for typed sync messages. It is defined by a trait (send, broadcast, subscribe) so the network stack can be swapped or mocked; an in-memory transport exists for tests. Metadata broadcast fans out to allowlisted peers over direct metadata-sync streams. File access is a separate stateful service: open returns a handle, reads stream `Bytes`, writes use offsets and revisions, and directory scans use cursors.
-
-## Endpoint ID
-
-An Endpoint ID identifies one iroh endpoint (device) on the network. An Allowed Endpoint list decides which Endpoint IDs may connect.
-
-## Pairing
-
-Pairing is the handshake that introduces two endpoints and exchanges the payload needed to trust each other. A Pairing Offer is one side's pending invitation, answered over a dedicated pairing channel.
-
-## Root ID
-
-A Root ID identifies the filesystem being synchronized. It scopes every metadata-sync and file-transfer request for that root.
-
-## Discovery
-
-Discovery resolves endpoint addresses and connection paths. It does not authorize an endpoint: every discovered endpoint must pass the chained-endpoint allowlist before it can use application protocols.
-
-## Root Transport
-
-A Root Transport binds the generic transport to one Root ID and its allowlist, so the file system sync engine can use it without knowing network details.
+A Transport provides typed send, broadcast, and subscribe operations for metadata snapshots and file sessions. It is abstracted so network implementations can be swapped; an in-memory transport exists for tests. Metadata snapshots are exchanged on connection/reconnection and after local committed changes. Lagged messages trigger a full exchange.

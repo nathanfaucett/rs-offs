@@ -1,11 +1,6 @@
 [workspace]
 resolver = "3"
-members = [
-  "crates/deckv",
-  "crates/file-system",
-  "crates/iroh-chain",
-  "crates/iroh-chain-file-system",
-]
+members = ["crates/file-system"]
 
 [workspace.package]
 version = "0.1.0"

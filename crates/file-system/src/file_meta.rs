@@ -13,6 +13,7 @@ pub enum FileKind {
 #[serde(bound(deserialize = "PeerId: Ord + Deserialize<'de>"))]
 pub struct FileMeta<PeerId = Uuid> {
     pub file_id: Uuid,
+    pub revision: Uuid,
     pub kind: FileKind,
 
     pub providers: BTreeSet<PeerId>,
@@ -34,6 +35,7 @@ impl<PeerId: Ord> FileMeta<PeerId> {
     fn new(file_id: Uuid, node_id: PeerId, kind: FileKind) -> Self {
         Self {
             file_id,
+            revision: Uuid::now_v7(),
             kind,
 
             providers: BTreeSet::from([node_id]),

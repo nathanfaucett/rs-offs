@@ -20,14 +20,17 @@ sync = []
 
 [dependencies]
 # Internal
-deckv = { path = "../deckv", default-features = false, features = ["redb", "std"] }
+btree-redb = { path = "../../../ofdb/crates/btree-redb", default-features = false }
+kv = { path = "../../../ofdb/crates/kv", default-features = false }
+kv-sync = { path = "../../../ofdb/crates/kv-sync", default-features = false }
 
 # Async
 futures-core = { version = "0.3", default-features = false, features = ["alloc"] }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
-tokio = { version = "1.52", default-features = false, features = ["sync"] }
+tokio = { version = "1.52", default-features = false, features = ["macros", "sync", "time"] }
 
 # Serialization
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
 
 # Storage

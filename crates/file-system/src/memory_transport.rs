@@ -157,10 +157,7 @@ where
 {
     type Handle = MemoryFileHandle<PeerId>;
     async fn open(&self, peer: PeerId, request: OpenRequest) -> Result<Self::Handle, Self::Error> {
-        let revision = request.revision.unwrap_or(deckv::Timestamp {
-            physical: 0,
-            logical: 0,
-        });
+        let revision = request.revision.unwrap_or_else(uuid::Uuid::now_v7);
         let handle = deterministic_handle(&request.path, request.revision);
         let sender = self
             .network
@@ -253,7 +250,7 @@ where
     }
 }
 
-fn deterministic_handle(path: &str, revision: Option<deckv::Timestamp>) -> FileHandleId {
+fn deterministic_handle(path: &str, revision: Option<uuid::Uuid>) -> FileHandleId {
     let mut bytes = [0_u8; 16];
     for (index, byte) in path.as_bytes().iter().enumerate() {
         bytes[index % 16] = bytes[index % 16]
@@ -261,13 +258,7 @@ fn deterministic_handle(path: &str, revision: Option<deckv::Timestamp>) -> FileH
             .rotate_left((index % 8) as u32);
     }
     if let Some(revision) = revision {
-        for (index, byte) in revision
-            .physical
-            .to_le_bytes()
-            .iter()
-            .chain(revision.logical.to_le_bytes().iter())
-            .enumerate()
-        {
+        for (index, byte) in revision.as_bytes().iter().enumerate() {
             bytes[index] ^= *byte;
         }
     }
@@ -278,7 +269,7 @@ pub struct MemoryFileHandle<PeerId> {
     transport: MemoryTransport<PeerId>,
     peer: PeerId,
     handle: FileHandleId,
-    revision: deckv::Timestamp,
+    revision: uuid::Uuid,
 }
 impl<PeerId> FileHandle<PeerId> for MemoryFileHandle<PeerId>
 where

@@ -1,30 +1,24 @@
 use std::{collections::HashMap, fmt::Debug};
 
-use deckv::{LwwRecord, Timestamp};
-
+use kv_sync::KvSnapshot;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::sync::broadcast;
 
 use crate::{
-    Error, FileHandle, FileHandleId, FileMeta, FileOperation, FileResponse, FileServiceError,
+    Error, FileHandle, FileHandleId, FileOperation, FileResponse, FileServiceError,
     FileSessionService, FileSystem, IncomingMessage, OpenRequest, Residency, SessionRequest,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(bound(deserialize = "PeerId: Ord + Deserialize<'de>"))]
 pub enum SyncMessage<PeerId> {
-    MetadataRequest {
-        since: Option<Timestamp>,
-    },
-    MetadataDelta {
-        records: Vec<(String, LwwRecord<PeerId, FileMeta<PeerId>>)>,
-    },
+    SnapshotRequest { peer: PeerId },
+    SnapshotDelta { snapshots: Vec<KvSnapshot> },
 }
 
 struct ServerHandle<'a, PeerId> {
     handle: Box<dyn FileHandle<PeerId, Error = Error> + 'a>,
     path: String,
-    revision: Timestamp,
+    revision: uuid::Uuid,
 }
 
 pub struct MetadataSync<'a, PeerId, T>
@@ -36,8 +30,9 @@ where
     transport: T,
     incoming: broadcast::Receiver<IncomingMessage<PeerId>>,
     sessions: broadcast::Receiver<SessionRequest<PeerId>>,
-    changes: broadcast::Receiver<(String, LwwRecord<PeerId, FileMeta<PeerId>>)>,
+    changes: broadcast::Receiver<()>,
     handles: HashMap<FileHandleId, ServerHandle<'a, PeerId>>,
+    last_snapshots: Vec<KvSnapshot>,
 }
 
 impl<PeerId> FileSystem<PeerId>
@@ -51,12 +46,14 @@ where
         MetadataSync {
             incoming: transport.subscribe(),
             sessions: transport.subscribe_file_sessions(),
-            changes: self.metadata.subscribe(),
+            changes: self.changes.subscribe(),
             file_system: self,
             transport,
             handles: HashMap::new(),
+            last_snapshots: Vec::new(),
         }
     }
+
     pub async fn sync_peer<T>(&self, transport: T) -> Result<(), Error>
     where
         T: FileSessionService<PeerId> + Sync + Clone + Send + 'static,
@@ -71,15 +68,22 @@ where
     T: FileSessionService<PeerId> + Sync + Clone + Send + 'static,
 {
     pub async fn announce(&self) -> Result<(), Error> {
+        let snapshots = self.export_snapshots().await?;
         for peer in self.transport.peers() {
-            let since = self
-                .file_system
-                .metadata
-                .get_latest_for_node_id(peer.clone())
-                .await
-                .map_err(metadata_error)?;
             self.transport
-                .send(peer, SyncMessage::MetadataRequest { since })
+                .send(
+                    peer.clone(),
+                    SyncMessage::SnapshotRequest { peer: peer.clone() },
+                )
+                .await
+                .map_err(transport_error)?;
+            self.transport
+                .send(
+                    peer,
+                    SyncMessage::SnapshotDelta {
+                        snapshots: snapshots.clone(),
+                    },
+                )
                 .await
                 .map_err(transport_error)?;
         }
@@ -134,26 +138,42 @@ where
 
     pub async fn run(mut self) -> Result<(), Error> {
         self.announce().await?;
+        self.last_snapshots = self.export_snapshots().await?;
         loop {
             tokio::select! {
-                result = self.changes.recv() => match result { Ok((path, record)) => self.transport.broadcast(SyncMessage::MetadataDelta { records: vec![(path, record)] }).await.map_err(transport_error)?, Err(broadcast::error::RecvError::Lagged(_)) => continue, Err(broadcast::error::RecvError::Closed) => return Ok(()) },
-                result = self.incoming.recv() => match result { Ok((peer, message)) => self.receive(peer, message).await?, Err(broadcast::error::RecvError::Lagged(_)) => continue, Err(broadcast::error::RecvError::Closed) => return Ok(()) },
-                result = self.sessions.recv() => match result { Ok((peer, operation, response)) => self.receive_session(peer, operation, response).await?, Err(broadcast::error::RecvError::Lagged(_)) => continue, Err(broadcast::error::RecvError::Closed) => return Ok(()) },
+                result = self.changes.recv() => match result {
+                    Ok(()) => self.publish_changes().await?,
+                    Err(broadcast::error::RecvError::Lagged(_)) => self.publish_changes().await?,
+                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
+                },
+                result = self.incoming.recv() => match result {
+                    Ok((peer, message)) => self.receive(peer, message).await?,
+                    Err(broadcast::error::RecvError::Lagged(_)) => self.announce().await?,
+                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
+                },
+                result = self.sessions.recv() => match result {
+                    Ok((peer, operation, response)) => self.receive_session(peer, operation, response).await?,
+                    Err(broadcast::error::RecvError::Lagged(_)) => self.announce().await?,
+                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
+                },
             }
         }
     }
 
     pub async fn pump(&mut self) -> Result<(), Error> {
-        while let Ok((path, record)) = self.changes.try_recv() {
-            self.transport
-                .broadcast(SyncMessage::MetadataDelta {
-                    records: vec![(path, record)],
-                })
-                .await
-                .map_err(transport_error)?;
-        }
-        while let Ok((peer, message)) = self.incoming.try_recv() {
-            self.receive(peer, message).await?;
+        while self.changes.try_recv().is_ok() {}
+        self.publish_changes().await?;
+        loop {
+            match self.incoming.try_recv() {
+                Ok((peer, message)) => self.receive(peer, message).await?,
+                Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                    self.announce().await?;
+                    continue;
+                }
+                Err(
+                    broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed,
+                ) => break,
+            }
         }
         while let Ok((peer, operation, response)) = self.sessions.try_recv() {
             self.receive_session(peer, operation, response).await?;
@@ -161,7 +181,40 @@ where
         Ok(())
     }
 
-    async fn provider(&self, meta: &FileMeta<PeerId>) -> Result<PeerId, Error> {
+    async fn export_snapshots(&self) -> Result<Vec<KvSnapshot>, Error> {
+        let transaction = self
+            .file_system
+            .metadata
+            .transaction()
+            .await
+            .map_err(metadata_error)?;
+        transaction
+            .export_snapshots()
+            .await
+            .map(|snapshots| {
+                snapshots
+                    .into_iter()
+                    .map(|(key, payload)| KvSnapshot { key, payload })
+                    .collect()
+            })
+            .map_err(metadata_error)
+    }
+
+    async fn publish_changes(&mut self) -> Result<(), Error> {
+        let snapshots = self.export_snapshots().await?;
+        if snapshots != self.last_snapshots {
+            self.transport
+                .broadcast(SyncMessage::SnapshotDelta {
+                    snapshots: snapshots.clone(),
+                })
+                .await
+                .map_err(transport_error)?;
+            self.last_snapshots = snapshots;
+        }
+        Ok(())
+    }
+
+    async fn provider(&self, meta: &crate::FileMeta<PeerId>) -> Result<PeerId, Error> {
         let peers = self.transport.peers();
         if peers.is_empty() {
             return Err(Error::NoPeers);
@@ -172,28 +225,33 @@ where
             .cloned()
             .ok_or(Error::NoReachableProvider)
     }
-    async fn receive(&self, peer: PeerId, message: SyncMessage<PeerId>) -> Result<(), Error> {
+
+    async fn receive(&mut self, peer: PeerId, message: SyncMessage<PeerId>) -> Result<(), Error> {
         match message {
-            SyncMessage::MetadataRequest { since } => {
-                let records = self
-                    .file_system
-                    .metadata
-                    .export(since)
-                    .await
-                    .map_err(metadata_error)?
-                    .into_iter()
-                    .collect();
+            SyncMessage::SnapshotRequest { peer: _ } => {
+                let snapshots = self.export_snapshots().await?;
                 self.transport
-                    .send(peer, SyncMessage::MetadataDelta { records })
+                    .send(peer, SyncMessage::SnapshotDelta { snapshots })
                     .await
                     .map_err(transport_error)
             }
-            SyncMessage::MetadataDelta { records } => self
-                .file_system
-                .metadata
-                .merge_peer_state(records.iter().cloned().collect())
-                .await
-                .map_err(metadata_error),
+            SyncMessage::SnapshotDelta { snapshots } => {
+                let mut transaction = self
+                    .file_system
+                    .metadata
+                    .transaction()
+                    .await
+                    .map_err(metadata_error)?;
+                for snapshot in snapshots {
+                    transaction
+                        .import_snapshot((snapshot.key, snapshot.payload))
+                        .await
+                        .map_err(metadata_error)?;
+                }
+                transaction.commit().await.map_err(metadata_error)?;
+                self.last_snapshots = self.export_snapshots().await?;
+                Ok(())
+            }
         }
     }
 
@@ -290,9 +348,11 @@ where
 fn metadata_error(error: impl std::fmt::Display) -> Error {
     Error::Metadata(error.to_string())
 }
+
 fn transport_error(error: impl std::fmt::Display) -> Error {
     Error::Metadata(format!("transport error: {error}"))
 }
+
 fn service_error(error: Error) -> FileServiceError {
     match error {
         Error::NotFound => FileServiceError::NotFound,
