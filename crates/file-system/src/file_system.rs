@@ -66,7 +66,7 @@ where
                 .open_table(table_definition::<TreeBytes, Vec<u8>>("metadata"))
                 .is_err()
             {
-                return Err(metadata_error("legacy metadata store is not supported"));
+                return Err(metadata_error("unsupported metadata store schema"));
             }
         } else {
             let transaction = database.begin_write().map_err(metadata_error)?;

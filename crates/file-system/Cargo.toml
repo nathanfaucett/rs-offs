@@ -12,11 +12,6 @@ description = "Local-first, eventually consistent file system primitives"
 [lib]
 name = "file_system"
 
-[features]
-default = []
-in-memory = []
-native = []
-sync = []
 
 [dependencies]
 # Internal

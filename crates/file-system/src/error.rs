@@ -3,6 +3,7 @@ use std::{fmt, io};
 #[derive(Debug)]
 pub enum Error {
     InvalidPath,
+    InvalidResourceId,
     NotFound,
     NotDirectory,
     IsDirectory,
@@ -17,6 +18,9 @@ pub enum Error {
     Offline,
     NoPeers,
     NoReachableProvider,
+    UnsupportedSyncProtocolVersion(u8),
+    SyncFrameTooLarge,
+    InvalidSyncFrame(String),
     Io(io::Error),
     Metadata(String),
 }
@@ -27,6 +31,7 @@ impl fmt::Display for Error {
             Self::InvalidPath => {
                 formatter.write_str("path must be relative and cannot use reserved components")
             }
+            Self::InvalidResourceId => formatter.write_str("filesystem ID must be a UUIDv7"),
             Self::NotFound => formatter.write_str("path was not found"),
             Self::NotDirectory => formatter.write_str("path is not a directory"),
             Self::IsDirectory => formatter.write_str("path names a directory"),
@@ -42,6 +47,18 @@ impl fmt::Display for Error {
             Self::NoPeers => formatter.write_str("no peers are online"),
             Self::NoReachableProvider => {
                 formatter.write_str("no reachable provider advertises the content")
+            }
+            Self::UnsupportedSyncProtocolVersion(version) => {
+                write!(
+                    formatter,
+                    "unsupported filesystem sync protocol version: {version}"
+                )
+            }
+            Self::SyncFrameTooLarge => {
+                formatter.write_str("filesystem sync frame exceeds size limit")
+            }
+            Self::InvalidSyncFrame(error) => {
+                write!(formatter, "invalid filesystem sync frame: {error}")
             }
             Self::Io(error) => error.fmt(formatter),
             Self::Metadata(error) => write!(formatter, "metadata error: {error}"),

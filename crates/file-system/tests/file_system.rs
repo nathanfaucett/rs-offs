@@ -698,7 +698,7 @@ async fn writes_produce_persistent_distinct_revisions() {
 }
 
 #[test]
-fn refuses_legacy_metadata_tables() {
+fn rejects_unsupported_metadata_schema() {
     let root = root();
     fs::create_dir_all(&root).unwrap();
     let database = redb::Database::create(root.join("metadata.redb")).unwrap();
