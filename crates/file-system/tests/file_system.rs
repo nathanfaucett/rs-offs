@@ -5,6 +5,7 @@ use file_system::{
     Error, FileHandle, FileKind, FileSessionService, FileSystem, MemoryNetwork, OpenRequest,
     Residency,
 };
+use redb::ReadableDatabase;
 
 use uuid::Uuid;
 
@@ -709,7 +710,28 @@ fn rejects_unsupported_metadata_schema() {
     transaction.commit().unwrap();
     drop(database);
 
-    assert!(FileSystem::open(&root, 1_u8).is_err());
+    let metadata_path = root.join("metadata.redb");
+
+    let error = FileSystem::open(&root, 1_u8)
+        .err()
+        .expect("unsupported metadata schema is rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported metadata store schema")
+    );
+    let database = redb::Database::open(&metadata_path).unwrap();
+    let transaction = database.begin_read().unwrap();
+    assert!(
+        transaction
+            .open_table(redb::TableDefinition::<&str, &[u8]>::new("clock"))
+            .is_ok()
+    );
+    assert!(
+        transaction
+            .open_table(redb::TableDefinition::<&str, &[u8]>::new("metadata"))
+            .is_err()
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
