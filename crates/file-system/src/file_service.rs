@@ -16,7 +16,7 @@ pub struct OpenRequest {
     pub revision: Option<Uuid>,
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct FileHandleId(pub Uuid);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -74,6 +74,7 @@ pub enum FileServiceError {
     NotFound,
     NotDirectory,
     IsDirectory,
+    InvalidReadLength,
     InvalidScanLimit,
     InvalidScanCursor,
     StaleRevision,
