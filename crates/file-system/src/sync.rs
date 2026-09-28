@@ -6,10 +6,9 @@ use tokio::sync::broadcast;
 
 use crate::{
     Error, FileHandle, FileHandleId, FileOperation, FileResponse, FileServiceError,
-    FileSessionService, FileSystem, IncomingMessage, OpenRequest, Residency, SessionRequest,
+    FileSessionService, FileSystem, IncomingMessage, MAX_FILE_READ_LENGTH, OpenRequest, Residency,
+    SessionRequest,
 };
-
-const MAX_FILE_READ_LENGTH: u32 = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SyncMessage<PeerId> {

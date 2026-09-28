@@ -12,6 +12,9 @@ description = "Local-first, eventually consistent file system primitives"
 [lib]
 name = "file_system"
 
+[features]
+default = []
+iroh = ["dep:iroh", "tokio/io-util", "tokio/rt"]
 
 [dependencies]
 # Internal
@@ -23,6 +26,9 @@ kv-sync = { path = "../../../ofdb/crates/kv-sync", default-features = false }
 futures-core = { version = "0.3", default-features = false, features = ["alloc"] }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 tokio = { version = "1.52", default-features = false, features = ["macros", "sync", "time"] }
+
+# Iroh
+iroh = { version = "1.1", default-features = false, features = ["tls-ring"], optional = true }
 
 # Serialization
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
@@ -36,5 +42,6 @@ bytes = { version = "1.11", default-features = false, features = ["serde", "std"
 uuid = { version = "1.26", default-features = false, features = ["serde", "std", "v7"] }
 
 [dev-dependencies]
+# Async
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 tokio = { version = "1.52", default-features = false, features = ["macros", "rt", "time"] }

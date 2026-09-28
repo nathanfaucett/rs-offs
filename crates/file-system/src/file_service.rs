@@ -9,6 +9,7 @@ use futures_util::StreamExt;
 
 pub const DEFAULT_SCAN_LIMIT: u32 = 256;
 pub const MAX_SCAN_LIMIT: u32 = 4096;
+pub(crate) const MAX_FILE_READ_LENGTH: u32 = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OpenRequest {
