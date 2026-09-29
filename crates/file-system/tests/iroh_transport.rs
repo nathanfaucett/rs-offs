@@ -55,9 +55,18 @@ async fn syncs_metadata_and_remote_file_sessions_over_one_stream() {
             application_id: "test-app".to_owned(),
             filesystem_id: "shared-files".to_owned(),
         };
-        let left_transport = IrohFileTransport::open(&connection, resource.clone())
+        let initiator_authorization_checks = Arc::new(AtomicUsize::new(0));
+        let initiator_checks = Arc::clone(&initiator_authorization_checks);
+        let left_transport =
+            IrohFileTransport::open_authorized(&connection, resource.clone(), move |_| {
+                let checks = Arc::clone(&initiator_checks);
+                async move {
+                    checks.fetch_add(1, Ordering::SeqCst);
+                    true
+                }
+            })
             .await
-            .expect("open stream");
+            .expect("open authorized stream");
         let (send, recv) = incoming.accept_bi().await.expect("accept stream");
         let authorization_checks = Arc::new(AtomicUsize::new(0));
         let allowed = Arc::new(AtomicBool::new(true));
@@ -113,7 +122,11 @@ async fn syncs_metadata_and_remote_file_sessions_over_one_stream() {
         .expect("metadata entry replicated");
         assert!(
             authorization_checks.load(Ordering::SeqCst) > 1,
-            "authorization is rechecked after the stream handshake"
+            "responder authorization is rechecked after the stream handshake"
+        );
+        assert!(
+            initiator_authorization_checks.load(Ordering::SeqCst) > 1,
+            "initiator authorization is rechecked during the stream"
         );
 
         let handle = right_transport

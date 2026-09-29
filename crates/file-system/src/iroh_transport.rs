@@ -89,6 +89,45 @@ impl IrohFileTransport {
         Ok(transport)
     }
 
+    pub async fn open_authorized<F, Fut>(
+        connection: &Connection,
+        resource: IrohResourceDescriptor,
+        authorize: F,
+    ) -> Result<Self, Error>
+    where
+        F: Fn(IrohResourceDescriptor) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = bool> + Send + 'static,
+    {
+        if !authorize(resource.clone()).await {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                "filesystem resource is not authorized for sync",
+            ));
+        }
+        let (send, recv) = connection.open_bi().await.map_err(Error::other)?;
+        let authorize = Arc::new(authorize);
+        let authorized_resource = resource.clone();
+        let authorize_frame: FrameAuthorizer = Arc::new(move || {
+            let authorize = Arc::clone(&authorize);
+            let resource = authorized_resource.clone();
+            Box::pin(async move { authorize(resource).await })
+        });
+        let transport = Self::new(
+            connection.remote_id(),
+            send,
+            recv,
+            true,
+            Some(authorize_frame),
+        );
+        transport
+            .enqueue(WireMessage::<EndpointId>::Hello {
+                version: IROH_FILE_PROTOCOL_VERSION,
+                resource,
+            })
+            .await?;
+        Ok(transport)
+    }
+
     pub async fn accept_authorized<F, Fut>(
         connection: &Connection,
         send: SendStream,
@@ -298,6 +337,14 @@ impl IrohFileTransport {
     }
 
     async fn enqueue<P: Serialize>(&self, message: WireMessage<P>) -> Result<(), Error> {
+        if let Some(authorize_frame) = &self.inner.authorize_frame
+            && !authorize_frame().await
+        {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                "filesystem sync access revoked",
+            ));
+        }
         let frame = encode(&message)?;
         self.inner.outgoing.send(frame).await.map_err(Error::other)
     }
