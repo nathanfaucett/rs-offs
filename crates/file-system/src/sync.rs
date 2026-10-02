@@ -361,6 +361,29 @@ where
     }
 }
 
+fn metadata_error(error: impl std::fmt::Display) -> Error {
+    Error::Metadata(error.to_string())
+}
+
+fn transport_error(error: impl std::fmt::Display) -> Error {
+    Error::Metadata(format!("transport error: {error}"))
+}
+
+fn service_error(error: Error) -> FileServiceError {
+    match error {
+        Error::NotFound => FileServiceError::NotFound,
+        Error::NotDirectory => FileServiceError::NotDirectory,
+        Error::IsDirectory => FileServiceError::IsDirectory,
+        Error::InvalidReadLength => FileServiceError::InvalidReadLength,
+        Error::InvalidScanCursor => FileServiceError::InvalidScanCursor,
+        Error::InvalidScanLimit => FileServiceError::InvalidScanLimit,
+        Error::StaleRevision => FileServiceError::StaleRevision,
+        Error::PassthroughWrite => FileServiceError::PassthroughWrite,
+        Error::ContentUnavailable => FileServiceError::ContentUnavailable,
+        _ => FileServiceError::Io,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
@@ -573,28 +596,5 @@ mod tests {
             b"original"
         );
         std::fs::remove_dir_all(root).expect("test directory should be removed");
-    }
-}
-
-fn metadata_error(error: impl std::fmt::Display) -> Error {
-    Error::Metadata(error.to_string())
-}
-
-fn transport_error(error: impl std::fmt::Display) -> Error {
-    Error::Metadata(format!("transport error: {error}"))
-}
-
-fn service_error(error: Error) -> FileServiceError {
-    match error {
-        Error::NotFound => FileServiceError::NotFound,
-        Error::NotDirectory => FileServiceError::NotDirectory,
-        Error::IsDirectory => FileServiceError::IsDirectory,
-        Error::InvalidReadLength => FileServiceError::InvalidReadLength,
-        Error::InvalidScanCursor => FileServiceError::InvalidScanCursor,
-        Error::InvalidScanLimit => FileServiceError::InvalidScanLimit,
-        Error::StaleRevision => FileServiceError::StaleRevision,
-        Error::PassthroughWrite => FileServiceError::PassthroughWrite,
-        Error::ContentUnavailable => FileServiceError::ContentUnavailable,
-        _ => FileServiceError::Io,
     }
 }

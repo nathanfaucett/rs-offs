@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fs, io,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::{Error, FileSystem};
 
 const CATALOG: TableDefinition<&[u8], &[u8]> = TableDefinition::new("filesystem_resources");
+const PROJECTED: TableDefinition<&[u8], u8> = TableDefinition::new("projected_filesystems");
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FileSystemId(Uuid);
@@ -70,14 +71,10 @@ impl FileSystemCatalog {
             Database::create(path)
         }
         .map_err(metadata_error)?;
-        if existed {
-            let transaction = database.begin_read().map_err(metadata_error)?;
-            transaction.open_table(CATALOG).map_err(metadata_error)?;
-        } else {
-            let transaction = database.begin_write().map_err(metadata_error)?;
-            transaction.open_table(CATALOG).map_err(metadata_error)?;
-            transaction.commit().map_err(metadata_error)?;
-        }
+        let transaction = database.begin_write().map_err(metadata_error)?;
+        transaction.open_table(CATALOG).map_err(metadata_error)?;
+        transaction.open_table(PROJECTED).map_err(metadata_error)?;
+        transaction.commit().map_err(metadata_error)?;
         Ok(Self {
             root: root.join("filesystems"),
             database: Arc::new(database),
@@ -158,6 +155,85 @@ impl FileSystemCatalog {
         transaction.commit().map_err(metadata_error)
     }
 
+    pub fn mark_projected_selected(&self, id: FileSystemId) -> Result<bool, Error> {
+        let transaction = self.database.begin_write().map_err(metadata_error)?;
+        let mut projected = transaction.open_table(PROJECTED).map_err(metadata_error)?;
+        let key = id.0.as_bytes();
+        let exists = projected
+            .get(key.as_slice())
+            .map_err(metadata_error)?
+            .is_some();
+        if exists {
+            projected
+                .insert(key.as_slice(), 1)
+                .map_err(metadata_error)?;
+        }
+        drop(projected);
+        transaction.commit().map_err(metadata_error)?;
+        Ok(exists)
+    }
+
+    pub fn mark_projected(&self, id: FileSystemId) -> Result<(), Error> {
+        let transaction = self.database.begin_write().map_err(metadata_error)?;
+        transaction
+            .open_table(PROJECTED)
+            .map_err(metadata_error)?
+            .insert(id.0.as_bytes().as_slice(), 1)
+            .map_err(metadata_error)?;
+        transaction.commit().map_err(metadata_error)
+    }
+
+    pub fn projected_selected(&self) -> Result<Vec<FileSystemId>, Error> {
+        let transaction = self.database.begin_read().map_err(metadata_error)?;
+        let table = transaction.open_table(PROJECTED).map_err(metadata_error)?;
+        table
+            .iter()
+            .map_err(metadata_error)?
+            .filter_map(|entry| match entry {
+                Ok((key, value)) if value.value() == 1 => {
+                    let bytes = key.value();
+                    let Ok(bytes) = <[u8; 16]>::try_from(bytes) else {
+                        return Some(Err(Error::InvalidResourceId));
+                    };
+                    Some(Ok(FileSystemId(Uuid::from_bytes(bytes))))
+                }
+                Ok(_) => None,
+                Err(error) => Some(Err(metadata_error(error))),
+            })
+            .collect()
+    }
+
+    pub fn evict_projected_copy(&self, id: FileSystemId) -> Result<bool, Error> {
+        let transaction = self.database.begin_read().map_err(metadata_error)?;
+        let projected = transaction.open_table(PROJECTED).map_err(metadata_error)?;
+        let Some(selected) = projected
+            .get(id.0.as_bytes().as_slice())
+            .map_err(metadata_error)?
+        else {
+            return Ok(false);
+        };
+        if selected.value() == 0 {
+            return Ok(false);
+        }
+        drop(selected);
+        drop(projected);
+        drop(transaction);
+
+        match fs::remove_dir_all(self.root.join(id.0.to_string())) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let transaction = self.database.begin_write().map_err(metadata_error)?;
+        transaction
+            .open_table(PROJECTED)
+            .map_err(metadata_error)?
+            .insert(id.0.as_bytes().as_slice(), 0)
+            .map_err(metadata_error)?;
+        transaction.commit().map_err(metadata_error)?;
+        Ok(true)
+    }
+
     pub fn snapshot(&self) -> Result<Vec<CatalogEntry>, Error> {
         let transaction = self.database.begin_read().map_err(metadata_error)?;
         let table = transaction.open_table(CATALOG).map_err(metadata_error)?;
@@ -169,6 +245,20 @@ impl FileSystemCatalog {
                 postcard::from_bytes(value.value()).map_err(metadata_error)
             })
             .collect()
+    }
+
+    pub fn apply_tombstone(&self, id: FileSystemId) -> Result<(), Error> {
+        let existing = self
+            .snapshot()?
+            .into_iter()
+            .find(|entry| entry.resource.id == id);
+        let resource = existing
+            .map(|entry| entry.resource)
+            .unwrap_or(FileSystemResource { id, name: None });
+        self.import_snapshot(&[CatalogEntry {
+            resource,
+            deleted: true,
+        }])
     }
 
     pub fn import_snapshot(&self, entries: &[CatalogEntry]) -> Result<(), Error> {

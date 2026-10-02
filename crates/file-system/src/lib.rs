@@ -24,7 +24,9 @@ pub use file_service::{
 };
 pub use file_system::{Entry, FileSystem};
 #[cfg(feature = "iroh")]
-pub use iroh_transport::{IrohFileHandle, IrohFileTransport, IrohResourceDescriptor};
+pub use iroh_transport::{
+    FILESYSTEM_STREAM_KIND, IrohFileHandle, IrohFileTransport, IrohResourceDescriptor,
+};
 pub use memory_transport::{MemoryNetwork, MemoryTransport, MemoryTransportError};
 pub use protocol::{
     FILESYSTEM_SYNC_PROTOCOL_VERSION, MAX_FILESYSTEM_SYNC_FRAME_SIZE, decode_sync_message,

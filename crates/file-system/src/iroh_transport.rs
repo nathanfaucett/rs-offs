@@ -4,9 +4,10 @@ use std::{
     io::{Error, ErrorKind},
     pin::Pin,
     sync::{
-        Arc,
+        Arc, Mutex as StdMutex,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use iroh::{
@@ -25,7 +26,9 @@ use crate::{
     OpenRequest, ScanPage, SessionRequest, SyncMessage, Transport,
 };
 
-const IROH_FILE_PROTOCOL_VERSION: u8 = 1;
+pub const FILESYSTEM_STREAM_KIND: u8 = 2;
+
+const IROH_FILE_PROTOCOL_VERSION: u8 = 2;
 const MAX_ACTIVE_REQUESTS: usize = 64;
 const MAX_READ_RESPONSE_FRAMES: usize = 512;
 const MAX_READ_RESPONSE_CHUNK_BYTES: usize = 1024 * 1024;
@@ -43,6 +46,7 @@ enum WireMessage<P> {
     Hello {
         version: u8,
         resource: IrohResourceDescriptor,
+        deleted: bool,
     },
     Metadata(SyncMessage<P>),
     Request {
@@ -60,9 +64,9 @@ type FrameAuthorizer = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = bool> + Send>
 struct Inner {
     peer: EndpointId,
     authorize_frame: Option<FrameAuthorizer>,
-    outgoing: mpsc::Sender<Vec<u8>>,
-    metadata: broadcast::Sender<IncomingMessage<EndpointId>>,
-    sessions: broadcast::Sender<SessionRequest<EndpointId>>,
+    outgoing: StdMutex<Option<mpsc::Sender<Vec<u8>>>>,
+    metadata: StdMutex<Option<broadcast::Sender<IncomingMessage<EndpointId>>>>,
+    sessions: StdMutex<Option<broadcast::Sender<SessionRequest<EndpointId>>>>,
     pending: Mutex<BTreeMap<u64, mpsc::UnboundedSender<FileResponse<EndpointId>>>>,
     request_slots: Arc<Semaphore>,
     next_id: AtomicU64,
@@ -74,16 +78,22 @@ pub struct IrohFileTransport {
 }
 
 impl IrohFileTransport {
+    pub fn close(&self) {
+        close_stream(&self.inner);
+    }
+
     pub async fn open(
         connection: &Connection,
         resource: IrohResourceDescriptor,
     ) -> Result<Self, Error> {
-        let (send, recv) = connection.open_bi().await.map_err(Error::other)?;
+        let (mut send, recv) = connection.open_bi().await.map_err(Error::other)?;
+        send.write_all(&[FILESYSTEM_STREAM_KIND]).await?;
         let transport = Self::new(connection.remote_id(), send, recv, true, None);
         transport
             .enqueue(WireMessage::<EndpointId>::Hello {
                 version: IROH_FILE_PROTOCOL_VERSION,
                 resource,
+                deleted: false,
             })
             .await?;
         Ok(transport)
@@ -98,13 +108,39 @@ impl IrohFileTransport {
         F: Fn(IrohResourceDescriptor) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = bool> + Send + 'static,
     {
+        Self::open_authorized_with_deletion(connection, resource, false, authorize).await
+    }
+
+    pub async fn open_tombstone_authorized<F, Fut>(
+        connection: &Connection,
+        resource: IrohResourceDescriptor,
+        authorize: F,
+    ) -> Result<Self, Error>
+    where
+        F: Fn(IrohResourceDescriptor) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = bool> + Send + 'static,
+    {
+        Self::open_authorized_with_deletion(connection, resource, true, authorize).await
+    }
+
+    async fn open_authorized_with_deletion<F, Fut>(
+        connection: &Connection,
+        resource: IrohResourceDescriptor,
+        deleted: bool,
+        authorize: F,
+    ) -> Result<Self, Error>
+    where
+        F: Fn(IrohResourceDescriptor) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = bool> + Send + 'static,
+    {
         if !authorize(resource.clone()).await {
             return Err(Error::new(
                 ErrorKind::PermissionDenied,
                 "filesystem resource is not authorized for sync",
             ));
         }
-        let (send, recv) = connection.open_bi().await.map_err(Error::other)?;
+        let (mut send, recv) = connection.open_bi().await.map_err(Error::other)?;
+        send.write_all(&[FILESYSTEM_STREAM_KIND]).await?;
         let authorize = Arc::new(authorize);
         let authorized_resource = resource.clone();
         let authorize_frame: FrameAuthorizer = Arc::new(move || {
@@ -123,6 +159,7 @@ impl IrohFileTransport {
             .enqueue(WireMessage::<EndpointId>::Hello {
                 version: IROH_FILE_PROTOCOL_VERSION,
                 resource,
+                deleted,
             })
             .await?;
         Ok(transport)
@@ -131,17 +168,41 @@ impl IrohFileTransport {
     pub async fn accept_authorized<F, Fut>(
         connection: &Connection,
         send: SendStream,
-        mut recv: RecvStream,
+        recv: RecvStream,
         authorize: F,
-    ) -> Result<(Self, IrohResourceDescriptor), Error>
+    ) -> Result<(Self, IrohResourceDescriptor, bool), Error>
     where
         F: Fn(IrohResourceDescriptor) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = bool> + Send + 'static,
     {
-        let resource = match read_message::<EndpointId>(&mut recv).await? {
-            WireMessage::Hello { version, resource } if version == IROH_FILE_PROTOCOL_VERSION => {
-                resource
-            }
+        let mut recv = recv;
+        let mut kind = [0; 1];
+        recv.read_exact(&mut kind).await.map_err(Error::other)?;
+        if kind[0] != FILESYSTEM_STREAM_KIND {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "invalid filesystem stream kind",
+            ));
+        }
+        Self::accept_authorized_after_marker(connection, send, recv, authorize).await
+    }
+
+    pub async fn accept_authorized_after_marker<F, Fut>(
+        connection: &Connection,
+        send: SendStream,
+        mut recv: RecvStream,
+        authorize: F,
+    ) -> Result<(Self, IrohResourceDescriptor, bool), Error>
+    where
+        F: Fn(IrohResourceDescriptor) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = bool> + Send + 'static,
+    {
+        let (resource, deleted) = match read_message::<EndpointId>(&mut recv).await? {
+            WireMessage::Hello {
+                version,
+                resource,
+                deleted,
+            } if version == IROH_FILE_PROTOCOL_VERSION => (resource, deleted),
             _ => {
                 return Err(Error::new(
                     ErrorKind::InvalidData,
@@ -173,9 +234,10 @@ impl IrohFileTransport {
             .enqueue(WireMessage::<EndpointId>::Hello {
                 version: IROH_FILE_PROTOCOL_VERSION,
                 resource: resource.clone(),
+                deleted: false,
             })
             .await?;
-        Ok((transport, resource))
+        Ok((transport, resource, deleted))
     }
 
     fn new(
@@ -191,9 +253,9 @@ impl IrohFileTransport {
         let inner = Arc::new(Inner {
             peer,
             authorize_frame,
-            outgoing,
-            metadata,
-            sessions,
+            outgoing: StdMutex::new(Some(outgoing)),
+            metadata: StdMutex::new(Some(metadata)),
+            sessions: StdMutex::new(Some(sessions)),
             pending: Mutex::new(BTreeMap::new()),
             request_slots: Arc::new(Semaphore::new(MAX_ACTIVE_REQUESTS)),
             next_id: AtomicU64::new(1),
@@ -207,9 +269,31 @@ impl IrohFileTransport {
                 }
             }
             let _ = send.finish();
+            close_stream(&writer_inner);
             fail_pending(&writer_inner).await;
         });
         tokio::spawn(read_loop(Arc::clone(&inner), recv, expect_hello));
+        if let Some(authorize) = inner.authorize_frame.clone() {
+            let authorization_inner = Arc::clone(&inner);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    if authorization_inner
+                        .outgoing
+                        .lock()
+                        .expect("Iroh outgoing lock poisoned")
+                        .is_none()
+                    {
+                        break;
+                    }
+                    if !authorize().await {
+                        close_stream(&authorization_inner);
+                        fail_pending(&authorization_inner).await;
+                        break;
+                    }
+                }
+            });
+        }
         Self { inner }
     }
 
@@ -228,7 +312,15 @@ impl IrohFileTransport {
         let frame = encode(&WireMessage::<EndpointId>::Request { id, operation })?;
         let (tx, rx) = mpsc::unbounded_channel();
         self.inner.pending.lock().await.insert(id, tx);
-        if let Err(error) = self.inner.outgoing.try_send(frame) {
+        let outgoing = self
+            .inner
+            .outgoing
+            .lock()
+            .expect("Iroh outgoing lock poisoned")
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::new(ErrorKind::BrokenPipe, "Iroh file session is closed"))?;
+        if let Err(error) = outgoing.try_send(frame) {
             self.inner.pending.lock().await.remove(&id);
             return Err(Error::other(error));
         }
@@ -297,7 +389,7 @@ impl Transport<EndpointId> for IrohFileTransport {
     }
 
     fn subscribe(&self) -> broadcast::Receiver<IncomingMessage<EndpointId>> {
-        self.inner.metadata.subscribe()
+        subscribe(&self.inner.metadata)
     }
 }
 
@@ -321,7 +413,7 @@ impl FileSessionService<EndpointId> for IrohFileTransport {
     }
 
     fn subscribe_file_sessions(&self) -> broadcast::Receiver<SessionRequest<EndpointId>> {
-        self.inner.sessions.subscribe()
+        subscribe(&self.inner.sessions)
     }
 }
 
@@ -346,7 +438,15 @@ impl IrohFileTransport {
             ));
         }
         let frame = encode(&message)?;
-        self.inner.outgoing.send(frame).await.map_err(Error::other)
+        let outgoing = self
+            .inner
+            .outgoing
+            .lock()
+            .expect("Iroh outgoing lock poisoned")
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::new(ErrorKind::BrokenPipe, "Iroh file session is closed"))?;
+        outgoing.send(frame).await.map_err(Error::other)
     }
 }
 
@@ -464,6 +564,7 @@ async fn read_loop(inner: Arc<Inner>, mut recv: RecvStream, expect_hello: bool) 
             Ok(WireMessage::Hello { version, .. }) if version == IROH_FILE_PROTOCOL_VERSION
         )
     {
+        close_stream(&inner);
         fail_pending(&inner).await;
         return;
     }
@@ -480,7 +581,16 @@ async fn read_loop(inner: Arc<Inner>, mut recv: RecvStream, expect_hello: bool) 
         match message {
             WireMessage::Hello { .. } => break,
             WireMessage::Metadata(message) => {
-                let _ = inner.metadata.send((inner.peer, message));
+                let sender = inner
+                    .metadata
+                    .lock()
+                    .expect("Iroh metadata lock poisoned")
+                    .as_ref()
+                    .cloned();
+                let Some(sender) = sender else {
+                    break;
+                };
+                let _ = sender.send((inner.peer, message));
             }
             WireMessage::Response { id, response } => {
                 if let Some(sender) = inner.pending.lock().await.get(&id) {
@@ -488,26 +598,32 @@ async fn read_loop(inner: Arc<Inner>, mut recv: RecvStream, expect_hello: bool) 
                 }
             }
             WireMessage::Request { id, operation } => {
+                let outgoing = inner
+                    .outgoing
+                    .lock()
+                    .expect("Iroh outgoing lock poisoned")
+                    .as_ref()
+                    .cloned();
+                let Some(outgoing) = outgoing else {
+                    break;
+                };
                 let Ok(permit) = Arc::clone(&inner.request_slots).try_acquire_owned() else {
-                    let _ = send_response(
-                        &inner.outgoing,
-                        id,
-                        FileResponse::Error(FileServiceError::Io),
-                    )
-                    .await;
+                    let _ = send_response(&outgoing, id, FileResponse::Error(FileServiceError::Io))
+                        .await;
                     continue;
                 };
                 let (tx, mut rx) = mpsc::channel(16);
-                if inner.sessions.send((inner.peer, operation, tx)).is_err() {
-                    let _ = send_response(
-                        &inner.outgoing,
-                        id,
-                        FileResponse::Error(FileServiceError::Io),
-                    )
-                    .await;
+                let sessions = inner
+                    .sessions
+                    .lock()
+                    .expect("Iroh sessions lock poisoned")
+                    .as_ref()
+                    .cloned();
+                if sessions.is_none_or(|sender| sender.send((inner.peer, operation, tx)).is_err()) {
+                    let _ = send_response(&outgoing, id, FileResponse::Error(FileServiceError::Io))
+                        .await;
                     continue;
                 }
-                let outgoing = inner.outgoing.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
                     while let Some(response) = rx.recv().await {
@@ -520,7 +636,38 @@ async fn read_loop(inner: Arc<Inner>, mut recv: RecvStream, expect_hello: bool) 
             }
         }
     }
+    close_stream(&inner);
     fail_pending(&inner).await;
+}
+
+fn close_stream(inner: &Inner) {
+    inner
+        .outgoing
+        .lock()
+        .expect("Iroh outgoing lock poisoned")
+        .take();
+    inner
+        .metadata
+        .lock()
+        .expect("Iroh metadata lock poisoned")
+        .take();
+    inner
+        .sessions
+        .lock()
+        .expect("Iroh sessions lock poisoned")
+        .take();
+}
+
+fn subscribe<T: Clone>(sender: &StdMutex<Option<broadcast::Sender<T>>>) -> broadcast::Receiver<T> {
+    let sender = sender.lock().expect("Iroh broadcast lock poisoned");
+    match sender.as_ref() {
+        Some(sender) => sender.subscribe(),
+        None => {
+            let (sender, receiver) = broadcast::channel(1);
+            drop(sender);
+            receiver
+        }
+    }
 }
 
 async fn fail_pending(inner: &Inner) {

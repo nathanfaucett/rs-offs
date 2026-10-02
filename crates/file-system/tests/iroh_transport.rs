@@ -72,7 +72,7 @@ async fn syncs_metadata_and_remote_file_sessions_over_one_stream() {
         let allowed = Arc::new(AtomicBool::new(true));
         let checks = Arc::clone(&authorization_checks);
         let authorized = Arc::clone(&allowed);
-        let (right_transport, accepted_resource) =
+        let (right_transport, accepted_resource, deleted) =
             IrohFileTransport::accept_authorized(&incoming, send, recv, move |_| {
                 let checks = Arc::clone(&checks);
                 let authorized = Arc::clone(&authorized);
@@ -84,6 +84,7 @@ async fn syncs_metadata_and_remote_file_sessions_over_one_stream() {
             .await
             .expect("validate accepted stream");
         assert_eq!(accepted_resource, resource);
+        assert!(!deleted);
 
         let left = Arc::new(FileSystem::open(root(), a.id()).expect("open left filesystem"));
         let right = Arc::new(FileSystem::open(root(), b.id()).expect("open right filesystem"));
@@ -170,8 +171,18 @@ async fn syncs_metadata_and_remote_file_sessions_over_one_stream() {
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(right.entry("revoked.txt").await.is_err());
 
-        left_sync.abort();
-        right_sync.abort();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            assert!(
+                left_sync.await.expect("initiator sync task").is_ok(),
+                "initiator sync ends cleanly when its stream closes"
+            );
+            assert!(
+                right_sync.await.expect("responder sync task").is_ok(),
+                "responder sync ends cleanly when its stream closes"
+            );
+        })
+        .await
+        .expect("revoked sync tasks close naturally");
     })
     .await
     .expect("Iroh file transport test timed out");

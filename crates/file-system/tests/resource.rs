@@ -108,6 +108,55 @@ fn imported_tombstone_wins_over_a_live_catalog_entry() {
     fs::remove_dir_all(root).expect("remove test root");
 }
 
+#[tokio::test]
+async fn deselecting_projected_resource_evicts_only_local_copy_without_tombstone() {
+    let root = root();
+    let catalog = FileSystemCatalog::open(&root).expect("open catalog");
+    let resource = catalog
+        .create(Some("shared".to_owned()))
+        .expect("create resource");
+    catalog
+        .mark_projected(resource.id)
+        .expect("mark projection");
+    let filesystem = catalog
+        .open_filesystem(resource.id, 1_u8)
+        .expect("open projected filesystem");
+    filesystem
+        .set_residency("", file_system::Residency::Full)
+        .await
+        .expect("set full residency");
+    filesystem
+        .write("cached.txt", b"local copy")
+        .await
+        .expect("write local copy");
+    let local_root = root
+        .join("filesystems")
+        .join(resource.id.as_uuid().to_string());
+    assert!(local_root.exists());
+
+    assert!(
+        catalog
+            .evict_projected_copy(resource.id)
+            .expect("evict copy")
+    );
+    assert!(!local_root.exists());
+    assert_eq!(
+        catalog.list().expect("catalog retains identity"),
+        [resource]
+    );
+    assert!(!catalog.snapshot().expect("snapshot remains live")[0].deleted);
+    assert!(
+        catalog
+            .projected_selected()
+            .expect("projection deselected")
+            .is_empty()
+    );
+
+    drop(filesystem);
+    drop(catalog);
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
 #[test]
 fn filesystem_id_is_uuid_v7_backed_and_parsed_ids_are_checked() {
     let id = FileSystemId::new();

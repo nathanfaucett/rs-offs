@@ -336,6 +336,51 @@ async fn full_peer_serves_content_to_passthrough_peer() {
 }
 
 #[tokio::test]
+async fn cancelled_remote_read_can_be_retried() {
+    let left_root = root();
+    let right_root = root();
+    let network = MemoryNetwork::new(16);
+    let left = FileSystem::open(&left_root, 1_u8).unwrap();
+    let right = FileSystem::open(&right_root, 2_u8).unwrap();
+    full(&left).await;
+    full(&right).await;
+    left.write("file.txt", b"content").await.unwrap();
+
+    let left_transport = network.transport(1);
+    let right_transport = network.transport(2);
+    let mut left_sync = left.metadata_sync(left_transport);
+    let mut right_sync = right.metadata_sync(right_transport.clone());
+    synchronize(&mut left_sync, &mut right_sync).await;
+    right
+        .set_residency("", Residency::Passthrough)
+        .await
+        .unwrap();
+
+    let mut handle = right_transport
+        .open(
+            1,
+            OpenRequest {
+                path: "file.txt".to_owned(),
+                revision: None,
+            },
+        )
+        .await
+        .unwrap();
+    left_sync.pump().await.unwrap();
+
+    let cancelled_read = handle.read(0, 1024);
+    drop(cancelled_read);
+    left_sync.pump().await.unwrap();
+
+    let pending = handle.read(0, 1024);
+    left_sync.pump().await.unwrap();
+    assert_eq!(pending.await.unwrap(), b"content".as_slice());
+
+    fs::remove_dir_all(left_root).unwrap();
+    fs::remove_dir_all(right_root).unwrap();
+}
+
+#[tokio::test]
 async fn reports_unavailable_requested_content() {
     let left_root = root();
     let right_root = root();
