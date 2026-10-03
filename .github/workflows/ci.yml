@@ -25,8 +25,8 @@ jobs:
           override: true
           components: rustfmt, clippy
 
-      - name: Install just
-        run: cargo install just --locked
+      - name: Install system dependencies
+        run: sudo apt-get install protobuf-compiler
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -37,11 +37,26 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Install just
+        run: cargo install just --locked
+
       - name: Rust fmt check
         run: just fmt-check
 
       - name: Cargo clippy
         run: just clippy
+
+      - name: Check metadata and remote dependency isolation
+        run: |
+          cargo metadata --no-deps --format-version 1 > /dev/null
+          if cargo tree -p ofdb-sql --no-default-features --features remote --edges normal | grep -E 'ofdb-(sql-engine|btree|sql-sync)|redb v|automerge v'; then
+            echo "SQL remote feature includes embedded or sync dependencies" >&2
+            exit 1
+          fi
+          if cargo tree -p ofdb-kv --no-default-features --features remote --edges normal | grep -E 'ofdb-(btree|kv-store|kv-sync)|redb v|automerge v'; then
+            echo "KV remote feature includes embedded or sync dependencies" >&2
+            exit 1
+          fi
 
   cargo-tests:
     name: Cargo tests
@@ -58,18 +73,6 @@ jobs:
           profile: minimal
           override: true
 
-      - name: Install just
-        run: cargo install just --locked
-
-      - name: Install llvm-cov
-        run: cargo install cargo-llvm-cov --locked
-
-      - name: Install crap
-        run: cargo install cargo-crap --locked
-
-      - name: Install cargo-hack
-        run: cargo install cargo-hack --locked
-
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -79,8 +82,26 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Install system dependencies
+        run: sudo apt-get install protobuf-compiler
+
+      - name: Install just
+        run: cargo install just --locked
+
+      - name: Install llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      - name: Install crap
+        run: cargo install cargo-crap --version 0.5.0 --locked
+
+      - name: Install cargo-hack
+        run: cargo install cargo-hack --locked
+
       - name: Show rustc/cargo
         run: rustc --version && cargo --version
 
-      - name: Test feature combinations
+      - name: Crap coverage
         run: just crap-summary
+
+      - name: Test
+        run: just test
