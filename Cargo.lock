@@ -254,47 +254,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "btree"
-version = "0.1.0"
-dependencies = [
- "async-lock",
- "async-stream",
- "futures",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "btree-automerge"
-version = "0.1.0"
-dependencies = [
- "async-lock",
- "async-stream",
- "automerge",
- "base64 0.21.7",
- "btree",
- "futures",
- "serde",
- "sha2 0.10.9",
- "uuid",
-]
-
-[[package]]
-name = "btree-redb"
-version = "0.1.0"
-dependencies = [
- "async-lock",
- "async-stream",
- "btree",
- "dashmap",
- "futures",
- "redb",
- "serde",
- "thiserror 2.0.20",
- "uuid",
- "value",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -791,13 +750,13 @@ checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 name = "file-system"
 version = "0.1.0"
 dependencies = [
- "btree-redb",
  "bytes",
  "futures-core",
  "futures-util",
  "iroh",
- "kv",
- "kv-sync",
+ "ofdb-btree-redb",
+ "ofdb-kv-store",
+ "ofdb-kv-sync",
  "postcard",
  "redb",
  "serde",
@@ -1611,28 +1570,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kv"
-version = "0.1.0"
-dependencies = [
- "automerge",
- "btree",
- "btree-automerge",
- "futures",
- "uuid",
-]
-
-[[package]]
-name = "kv-sync"
-version = "0.1.0"
-dependencies = [
- "btree",
- "btree-automerge",
- "kv",
- "postcard",
- "serde",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2189,6 +2126,77 @@ dependencies = [
  "objc2",
  "objc2-core-foundation",
  "objc2-security",
+]
+
+[[package]]
+name = "ofdb-btree"
+version = "0.1.0"
+dependencies = [
+ "async-lock",
+ "async-stream",
+ "futures",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "ofdb-btree-automerge"
+version = "0.1.0"
+dependencies = [
+ "async-lock",
+ "async-stream",
+ "automerge",
+ "base64 0.21.7",
+ "futures",
+ "ofdb-btree",
+ "serde",
+ "sha2 0.10.9",
+ "uuid",
+]
+
+[[package]]
+name = "ofdb-btree-redb"
+version = "0.1.0"
+dependencies = [
+ "async-lock",
+ "async-stream",
+ "dashmap",
+ "futures",
+ "ofdb-btree",
+ "ofdb-sql-value",
+ "redb",
+ "serde",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "ofdb-kv-store"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "futures",
+ "ofdb-btree",
+ "ofdb-btree-automerge",
+ "uuid",
+]
+
+[[package]]
+name = "ofdb-kv-sync"
+version = "0.1.0"
+dependencies = [
+ "ofdb-btree",
+ "ofdb-btree-automerge",
+ "ofdb-kv-store",
+ "postcard",
+ "serde",
+]
+
+[[package]]
+name = "ofdb-sql-value"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "uuid",
 ]
 
 [[package]]
@@ -3413,14 +3421,6 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
-
-[[package]]
-name = "value"
-version = "0.1.0"
-dependencies = [
- "serde",
- "uuid",
-]
 
 [[package]]
 name = "version_check"

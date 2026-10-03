@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fmt::Debug};
 
-use kv_sync::KvSnapshot;
+use ofdb_kv_sync::KvSnapshot;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::sync::broadcast;
 

@@ -10,8 +10,8 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use btree_redb::{Bytes as TreeBytes, RedbByteBTree, table_definition};
-use kv::KvStore;
+use ofdb_btree_redb::{Bytes as TreeBytes, RedbByteBTree, table_definition};
+use ofdb_kv_store::KvStore;
 use redb::{Database, ReadableDatabase};
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -75,7 +75,9 @@ where
                 .map_err(metadata_error)?;
             transaction.commit().map_err(metadata_error)?;
         }
-        let metadata = KvStore::new(RedbByteBTree::new(Arc::new(database), "metadata"));
+        let metadata = KvStore::new(RedbByteBTree::new(Arc::new(database), "metadata"), || {
+            uuid::Timestamp::now(uuid::NoContext)
+        });
         let changes = broadcast::channel(16).0;
 
         Ok(Self {
