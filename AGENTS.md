@@ -1,5 +1,7 @@
 # AGENTS.md
 
+For Domain information, see the [Domain Model](CONTEXT.md).
+
 ## Refactoring Protocol
 
 - ALWAYS choose rewriting and deleting over modifying or wrapping old code.
