@@ -18,9 +18,7 @@ iroh = ["dep:iroh", "tokio/io-util", "tokio/rt"]
 
 [dependencies]
 # Internal
-ofdb-btree-redb = { package = "ofdb-btree-redb", path = "../../../ofdb/crates/btree-redb", default-features = false }
-ofdb-kv-store = { package = "ofdb-kv-store", path = "../../../ofdb/crates/kv-store", default-features = false }
-ofdb-kv-sync = { package = "ofdb-kv-sync", path = "../../../ofdb/crates/kv-sync", default-features = false }
+ofdb-kv = { version = "0.1", path = "../../../ofdb/crates/kv", default-features = false, features = ["redb", "sync"] }
 
 # Async
 futures-core = { version = "0.3", default-features = false, features = ["alloc"] }

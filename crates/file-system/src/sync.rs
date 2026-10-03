@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fmt::Debug};
 
-use ofdb_kv_sync::KvSnapshot;
+use ofdb_kv::KvSnapshot;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::sync::broadcast;
 
@@ -183,21 +183,10 @@ where
     }
 
     async fn export_snapshots(&self) -> Result<Vec<KvSnapshot>, Error> {
-        let transaction = self
-            .file_system
-            .metadata
-            .transaction()
-            .await
-            .map_err(metadata_error)?;
-        transaction
+        self.file_system
+            .database
             .export_snapshots()
             .await
-            .map(|snapshots| {
-                snapshots
-                    .into_iter()
-                    .map(|(key, payload)| KvSnapshot { key, payload })
-                    .collect()
-            })
             .map_err(metadata_error)
     }
 
@@ -237,19 +226,11 @@ where
                     .map_err(transport_error)
             }
             SyncMessage::SnapshotDelta { snapshots } => {
-                let mut transaction = self
-                    .file_system
-                    .metadata
-                    .transaction()
+                self.file_system
+                    .database
+                    .import_snapshots(snapshots)
                     .await
                     .map_err(metadata_error)?;
-                for snapshot in snapshots {
-                    transaction
-                        .import_snapshot((snapshot.key, snapshot.payload))
-                        .await
-                        .map_err(metadata_error)?;
-                }
-                transaction.commit().await.map_err(metadata_error)?;
                 self.last_snapshots = self.export_snapshots().await?;
                 Ok(())
             }

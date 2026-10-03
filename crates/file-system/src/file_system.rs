@@ -3,16 +3,14 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Mutex,
 };
 
 use bytes::Bytes;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use ofdb_btree_redb::{Bytes as TreeBytes, RedbByteBTree, table_definition};
-use ofdb_kv_store::KvStore;
-use redb::{Database, ReadableDatabase};
+use ofdb_kv::{Client, Database};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -22,8 +20,6 @@ use crate::{
     path::{directory, file},
     residency::ResidencyRules,
 };
-
-pub(crate) type MetadataStore = KvStore<RedbByteBTree>;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound(deserialize = "PeerId: Ord + Deserialize<'de>"))]
@@ -37,7 +33,8 @@ where
     PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + 'static,
 {
     content_root: PathBuf,
-    pub(crate) metadata: MetadataStore,
+    pub(crate) database: Database,
+    pub(crate) metadata: Client,
     node_id: PeerId,
     residency: Mutex<ResidencyRules>,
     pub(crate) changes: broadcast::Sender<()>,
@@ -52,36 +49,14 @@ where
         fs::create_dir_all(root)?;
         let content_root = root.join(".data");
         fs::create_dir_all(&content_root)?;
-        let metadata_path = root.join("metadata.redb");
-        let existed = metadata_path.exists();
-        let database = if existed {
-            Database::open(&metadata_path)
-        } else {
-            Database::create(&metadata_path)
-        }
-        .map_err(metadata_error)?;
-        if existed {
-            let transaction = database.begin_read().map_err(metadata_error)?;
-            if transaction
-                .open_table(table_definition::<TreeBytes, Vec<u8>>("metadata"))
-                .is_err()
-            {
-                return Err(metadata_error("unsupported metadata store schema"));
-            }
-        } else {
-            let transaction = database.begin_write().map_err(metadata_error)?;
-            transaction
-                .open_table(table_definition::<TreeBytes, Vec<u8>>("metadata"))
-                .map_err(metadata_error)?;
-            transaction.commit().map_err(metadata_error)?;
-        }
-        let metadata = KvStore::new(RedbByteBTree::new(Arc::new(database), "metadata"), || {
-            uuid::Timestamp::now(uuid::NoContext)
-        });
+        let database = Database::open_with_table(root.join("metadata.redb"), "metadata")
+            .map_err(metadata_error)?;
+        let metadata = database.client();
         let changes = broadcast::channel(16).0;
 
         Ok(Self {
             content_root,
+            database,
             metadata,
             node_id,
             residency: Mutex::new(ResidencyRules::default()),
@@ -299,9 +274,7 @@ where
 
     pub async fn delete(&self, path: &str) -> Result<(), Error> {
         let _ = self.entry(path).await?;
-        let mut transaction = self.metadata.transaction().await.map_err(metadata_error)?;
-        transaction.delete(path).await.map_err(metadata_error)?;
-        transaction.commit().await.map_err(metadata_error)?;
+        self.metadata.delete(path).await.map_err(metadata_error)?;
         let _ = self.changes.send(());
         Ok(())
     }
@@ -416,9 +389,8 @@ where
     }
 
     pub(crate) async fn get(&self, path: &str) -> Result<Option<FileMeta<PeerId>>, Error> {
-        let transaction = self.metadata.transaction().await.map_err(metadata_error)?;
-        transaction
-            .get(path, 0)
+        self.metadata
+            .get(path)
             .await
             .map_err(metadata_error)?
             .map(|bytes| postcard::from_bytes(&bytes).map_err(metadata_error))
@@ -426,9 +398,8 @@ where
     }
 
     async fn all_metadata(&self) -> Result<Vec<(String, FileMeta<PeerId>)>, Error> {
-        let transaction = self.metadata.transaction().await.map_err(metadata_error)?;
-        transaction
-            .scan_all(0)
+        self.metadata
+            .scan_all()
             .await
             .map_err(metadata_error)?
             .into_iter()
@@ -510,8 +481,7 @@ where
     }
 
     async fn put(&self, path: &str, meta: FileMeta<PeerId>) -> Result<(), Error> {
-        let mut transaction = self.metadata.transaction().await.map_err(metadata_error)?;
-        transaction
+        self.metadata
             .set(
                 path,
                 postcard::to_allocvec(&meta).map_err(metadata_error)?,
@@ -519,7 +489,6 @@ where
             )
             .await
             .map_err(metadata_error)?;
-        transaction.commit().await.map_err(metadata_error)?;
         let _ = self.changes.send(());
         Ok(())
     }

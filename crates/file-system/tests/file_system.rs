@@ -750,7 +750,7 @@ fn rejects_unsupported_metadata_schema() {
     let database = redb::Database::create(root.join("metadata.redb")).unwrap();
     let transaction = database.begin_write().unwrap();
     transaction
-        .open_table(redb::TableDefinition::<&str, &[u8]>::new("clock"))
+        .open_table(redb::TableDefinition::<&str, &[u8]>::new("metadata"))
         .unwrap();
     transaction.commit().unwrap();
     drop(database);
@@ -769,12 +769,12 @@ fn rejects_unsupported_metadata_schema() {
     let transaction = database.begin_read().unwrap();
     assert!(
         transaction
-            .open_table(redb::TableDefinition::<&str, &[u8]>::new("clock"))
+            .open_table(redb::TableDefinition::<&str, &[u8]>::new("metadata"))
             .is_ok()
     );
     assert!(
         transaction
-            .open_table(redb::TableDefinition::<&str, &[u8]>::new("metadata"))
+            .open_table(redb::TableDefinition::<&str, &[u8]>::new("ofdb-kv"))
             .is_err()
     );
     fs::remove_dir_all(root).unwrap();

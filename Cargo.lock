@@ -754,9 +754,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "iroh",
- "ofdb-btree-redb",
- "ofdb-kv-store",
- "ofdb-kv-sync",
+ "ofdb-kv",
  "postcard",
  "redb",
  "serde",
@@ -2166,6 +2164,19 @@ dependencies = [
  "redb",
  "serde",
  "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "ofdb-kv"
+version = "0.1.0"
+dependencies = [
+ "ofdb-btree",
+ "ofdb-btree-redb",
+ "ofdb-kv-store",
+ "ofdb-kv-sync",
+ "redb",
+ "tokio",
  "uuid",
 ]
 
