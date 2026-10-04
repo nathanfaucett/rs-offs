@@ -106,7 +106,7 @@ where
             return Ok(());
         }
         let provider = self.provider(&entry.meta).await?;
-        let mut handle = self
+        let handle = self
             .transport
             .open(
                 provider,
@@ -117,16 +117,25 @@ where
             )
             .await
             .map_err(|_| Error::Offline)?;
-        let bytes = handle
-            .read(0, MAX_FILE_READ_LENGTH)
-            .await
-            .map_err(|_| Error::Offline)?;
+        let content =
+            futures_util::stream::try_unfold((handle, 0_u64), |(mut handle, offset)| async move {
+                let bytes = handle
+                    .read(offset, MAX_FILE_READ_LENGTH)
+                    .await
+                    .map_err(|_| Error::Offline)?;
+                if bytes.is_empty() {
+                    return Ok(None);
+                }
+                let next_offset = offset.checked_add(bytes.len() as u64).ok_or_else(|| {
+                    Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "file offset overflow during sync",
+                    ))
+                })?;
+                Ok(Some((bytes, (handle, next_offset))))
+            });
         self.file_system
-            .store_content(
-                entry.meta.file_id,
-                revision,
-                Box::pin(futures_util::stream::once(async move { Ok(bytes) })),
-            )
+            .store_content(entry.meta.file_id, revision, Box::pin(content))
             .await
     }
 

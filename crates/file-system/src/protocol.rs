@@ -3,7 +3,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use crate::{Error, SyncMessage};
 
 pub const FILESYSTEM_SYNC_PROTOCOL_VERSION: u8 = 1;
-pub const MAX_FILESYSTEM_SYNC_FRAME_SIZE: usize = 8 * 1024 * 1024;
+pub const MAX_FILESYSTEM_SYNC_FRAME_SIZE: usize = 1024 * 1024;
 
 pub fn encode_sync_message<PeerId>(message: &SyncMessage<PeerId>) -> Result<Vec<u8>, Error>
 where

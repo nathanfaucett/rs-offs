@@ -10,7 +10,7 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use ofdb_kv::{Client, Database};
+use ofdb_kv::{Client, Database, JsonValue, Value};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -311,7 +311,9 @@ where
             transaction
                 .set(
                     destination,
-                    postcard::to_allocvec(&meta).map_err(metadata_error)?,
+                    Value::Json(JsonValue::from(
+                        serde_json::to_value(&meta).map_err(metadata_error)?,
+                    )),
                     None,
                 )
                 .await
@@ -388,29 +390,6 @@ where
         Ok(())
     }
 
-    pub(crate) async fn get(&self, path: &str) -> Result<Option<FileMeta<PeerId>>, Error> {
-        self.metadata
-            .get(path)
-            .await
-            .map_err(metadata_error)?
-            .map(|bytes| postcard::from_bytes(&bytes).map_err(metadata_error))
-            .transpose()
-    }
-
-    async fn all_metadata(&self) -> Result<Vec<(String, FileMeta<PeerId>)>, Error> {
-        self.metadata
-            .scan_all()
-            .await
-            .map_err(metadata_error)?
-            .into_iter()
-            .map(|(path, bytes)| {
-                postcard::from_bytes(&bytes)
-                    .map(|meta| (path, meta))
-                    .map_err(metadata_error)
-            })
-            .collect()
-    }
-
     fn content_path(&self, file_id: Uuid) -> PathBuf {
         self.content_root.join(file_id.to_string())
     }
@@ -480,11 +459,44 @@ where
             .any(|(_, meta)| meta.revision == revision && meta.file_id == file_id))
     }
 
+    pub(crate) async fn get(&self, path: &str) -> Result<Option<FileMeta<PeerId>>, Error> {
+        self.metadata
+            .get(path)
+            .await
+            .map_err(metadata_error)?
+            .map(|value| {
+                let json = value
+                    .to_json()
+                    .ok_or_else(|| metadata_error("metadata value is not JSON"))?;
+                serde_json::from_value(to_serde_json(json)?).map_err(metadata_error)
+            })
+            .transpose()
+    }
+
+    async fn all_metadata(&self) -> Result<Vec<(String, FileMeta<PeerId>)>, Error> {
+        self.metadata
+            .scan_all()
+            .await
+            .map_err(metadata_error)?
+            .into_iter()
+            .map(|(path, value)| {
+                let json = value
+                    .to_json()
+                    .ok_or_else(|| metadata_error("metadata value is not JSON"))?;
+                serde_json::from_value(to_serde_json(json)?)
+                    .map(|meta| (path, meta))
+                    .map_err(metadata_error)
+            })
+            .collect()
+    }
+
     async fn put(&self, path: &str, meta: FileMeta<PeerId>) -> Result<(), Error> {
         self.metadata
             .set(
                 path,
-                postcard::to_allocvec(&meta).map_err(metadata_error)?,
+                Value::Json(JsonValue::from(
+                    serde_json::to_value(&meta).map_err(metadata_error)?,
+                )),
                 None,
             )
             .await
@@ -511,6 +523,35 @@ fn write_file(path: &Path, content: &[u8]) -> Result<(), Error> {
 
 fn within(scope: &str, path: &str) -> bool {
     scope.is_empty() || path == scope || path.starts_with(&format!("{scope}/"))
+}
+
+fn to_serde_json(value: ofdb_kv::JsonValue) -> Result<serde_json::Value, Error> {
+    match value {
+        ofdb_kv::JsonValue::Null => Ok(serde_json::Value::Null),
+        ofdb_kv::JsonValue::Bool(value) => Ok(serde_json::Value::Bool(value)),
+        ofdb_kv::JsonValue::Number(ofdb_kv::JsonNumber::I64(value)) => {
+            Ok(serde_json::Value::Number(value.into()))
+        }
+        ofdb_kv::JsonValue::Number(ofdb_kv::JsonNumber::U64(value)) => {
+            Ok(serde_json::Value::Number(value.into()))
+        }
+        ofdb_kv::JsonValue::Number(ofdb_kv::JsonNumber::F64(value)) => {
+            serde_json::Number::from_f64(value)
+                .map(serde_json::Value::Number)
+                .ok_or_else(|| metadata_error("metadata contains a non-finite number"))
+        }
+        ofdb_kv::JsonValue::String(value) => Ok(serde_json::Value::String(value)),
+        ofdb_kv::JsonValue::Array(values) => values
+            .into_iter()
+            .map(to_serde_json)
+            .collect::<Result<Vec<_>, _>>()
+            .map(serde_json::Value::Array),
+        ofdb_kv::JsonValue::Object(values) => values
+            .into_iter()
+            .map(|(key, value)| Ok((key, to_serde_json(value)?)))
+            .collect::<Result<serde_json::Map<_, _>, Error>>()
+            .map(serde_json::Value::Object),
+    }
 }
 
 fn metadata_error(error: impl std::fmt::Display) -> Error {

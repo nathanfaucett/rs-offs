@@ -31,7 +31,7 @@ pub const FILESYSTEM_STREAM_KIND: u8 = 2;
 const IROH_FILE_PROTOCOL_VERSION: u8 = 2;
 const MAX_ACTIVE_REQUESTS: usize = 64;
 const MAX_READ_RESPONSE_FRAMES: usize = 512;
-const MAX_READ_RESPONSE_CHUNK_BYTES: usize = 1024 * 1024;
+const MAX_READ_RESPONSE_CHUNK_BYTES: usize = MAX_FILESYSTEM_SYNC_FRAME_SIZE - 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct IrohResourceDescriptor {
