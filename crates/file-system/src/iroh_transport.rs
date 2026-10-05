@@ -5,7 +5,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex as StdMutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -17,7 +17,7 @@ use iroh::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::{
     io::AsyncWriteExt,
-    sync::{Mutex, Semaphore, broadcast, mpsc},
+    sync::{Mutex, OwnedSemaphorePermit, Semaphore, broadcast, mpsc, watch},
 };
 
 use crate::{
@@ -30,6 +30,7 @@ pub const FILESYSTEM_STREAM_KIND: u8 = 2;
 
 const IROH_FILE_PROTOCOL_VERSION: u8 = 2;
 const MAX_ACTIVE_REQUESTS: usize = 64;
+const MAX_PENDING_RESPONSES: usize = 1;
 const MAX_READ_RESPONSE_FRAMES: usize = 512;
 const MAX_READ_RESPONSE_CHUNK_BYTES: usize = MAX_FILESYSTEM_SYNC_FRAME_SIZE - 1024;
 
@@ -67,14 +68,32 @@ struct Inner {
     outgoing: StdMutex<Option<mpsc::Sender<Vec<u8>>>>,
     metadata: StdMutex<Option<broadcast::Sender<IncomingMessage<EndpointId>>>>,
     sessions: StdMutex<Option<broadcast::Sender<SessionRequest<EndpointId>>>>,
-    pending: Mutex<BTreeMap<u64, mpsc::UnboundedSender<FileResponse<EndpointId>>>>,
+    pending: Mutex<BTreeMap<u64, mpsc::Sender<FileResponse<EndpointId>>>>,
     request_slots: Arc<Semaphore>,
     next_id: AtomicU64,
+    transport_handles: AtomicUsize,
+    shutdown: watch::Sender<bool>,
 }
 
-#[derive(Clone)]
 pub struct IrohFileTransport {
     inner: Arc<Inner>,
+}
+
+impl Clone for IrohFileTransport {
+    fn clone(&self) -> Self {
+        self.inner.transport_handles.fetch_add(1, Ordering::Relaxed);
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl Drop for IrohFileTransport {
+    fn drop(&mut self) {
+        if self.inner.transport_handles.fetch_sub(1, Ordering::AcqRel) == 1 {
+            close_stream(&self.inner);
+        }
+    }
 }
 
 impl IrohFileTransport {
@@ -250,6 +269,7 @@ impl IrohFileTransport {
         let (outgoing, mut outgoing_rx) = mpsc::channel::<Vec<u8>>(64);
         let (metadata, _) = broadcast::channel(64);
         let (sessions, _) = broadcast::channel(64);
+        let (shutdown, _) = watch::channel(false);
         let inner = Arc::new(Inner {
             peer,
             authorize_frame,
@@ -259,11 +279,21 @@ impl IrohFileTransport {
             pending: Mutex::new(BTreeMap::new()),
             request_slots: Arc::new(Semaphore::new(MAX_ACTIVE_REQUESTS)),
             next_id: AtomicU64::new(1),
+            transport_handles: AtomicUsize::new(1),
+            shutdown,
         });
         let writer_inner = Arc::clone(&inner);
+        let mut writer_shutdown = inner.shutdown.subscribe();
         tokio::spawn(async move {
             let mut send = send;
-            while let Some(frame) = outgoing_rx.recv().await {
+            loop {
+                let frame = tokio::select! {
+                    _ = writer_shutdown.changed() => break,
+                    frame = outgoing_rx.recv() => match frame {
+                        Some(frame) => frame,
+                        None => break,
+                    },
+                };
                 if write_frame(&mut send, &frame).await.is_err() {
                     break;
                 }
@@ -272,17 +302,27 @@ impl IrohFileTransport {
             close_stream(&writer_inner);
             fail_pending(&writer_inner).await;
         });
-        tokio::spawn(read_loop(Arc::clone(&inner), recv, expect_hello));
+        tokio::spawn(read_loop(
+            Arc::clone(&inner),
+            recv,
+            expect_hello,
+            inner.shutdown.subscribe(),
+        ));
         if let Some(authorize) = inner.authorize_frame.clone() {
             let authorization_inner = Arc::clone(&inner);
+            let mut authorization_shutdown = inner.shutdown.subscribe();
             tokio::spawn(async move {
                 loop {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    if authorization_inner
-                        .outgoing
-                        .lock()
-                        .expect("Iroh outgoing lock poisoned")
-                        .is_none()
+                    tokio::select! {
+                        _ = authorization_shutdown.changed() => break,
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                    }
+                    if *authorization_shutdown.borrow()
+                        || authorization_inner
+                            .outgoing
+                            .lock()
+                            .expect("Iroh outgoing lock poisoned")
+                            .is_none()
                     {
                         break;
                     }
@@ -300,7 +340,14 @@ impl IrohFileTransport {
     async fn request(
         &self,
         operation: FileOperation,
-    ) -> Result<(u64, mpsc::UnboundedReceiver<FileResponse<EndpointId>>), Error> {
+    ) -> Result<
+        (
+            u64,
+            mpsc::Receiver<FileResponse<EndpointId>>,
+            OwnedSemaphorePermit,
+        ),
+        Error,
+    > {
         if matches!(&operation, FileOperation::Write { data, .. } if data.len() > MAX_FILESYSTEM_SYNC_FRAME_SIZE - 128)
         {
             return Err(Error::new(
@@ -308,10 +355,12 @@ impl IrohFileTransport {
                 "filesystem write exceeds frame size limit",
             ));
         }
+        let permit = Arc::clone(&self.inner.request_slots)
+            .acquire_owned()
+            .await
+            .map_err(|_| Error::new(ErrorKind::BrokenPipe, "Iroh file session is closed"))?;
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let frame = encode(&WireMessage::<EndpointId>::Request { id, operation })?;
-        let (tx, rx) = mpsc::unbounded_channel();
-        self.inner.pending.lock().await.insert(id, tx);
         let outgoing = self
             .inner
             .outgoing
@@ -320,11 +369,13 @@ impl IrohFileTransport {
             .as_ref()
             .cloned()
             .ok_or_else(|| Error::new(ErrorKind::BrokenPipe, "Iroh file session is closed"))?;
+        let (tx, rx) = mpsc::channel(MAX_PENDING_RESPONSES);
+        self.inner.pending.lock().await.insert(id, tx);
         if let Err(error) = outgoing.try_send(frame) {
             self.inner.pending.lock().await.remove(&id);
             return Err(Error::other(error));
         }
-        Ok((id, rx))
+        Ok((id, rx, permit))
     }
 
     async fn rpc(&self, operation: FileOperation) -> Result<Vec<FileResponse<EndpointId>>, Error> {
@@ -334,7 +385,7 @@ impl IrohFileTransport {
             }
             _ => None,
         };
-        let (id, mut rx) = self.request(operation).await?;
+        let (id, mut rx, _permit) = self.request(operation).await?;
         let mut responses = Vec::new();
         let mut read_bytes = 0_usize;
         while let Some(response) = rx.recv().await {
@@ -557,10 +608,15 @@ impl FileHandle<EndpointId> for IrohFileHandle {
     }
 }
 
-async fn read_loop(inner: Arc<Inner>, mut recv: RecvStream, expect_hello: bool) {
+async fn read_loop(
+    inner: Arc<Inner>,
+    mut recv: RecvStream,
+    expect_hello: bool,
+    mut shutdown: watch::Receiver<bool>,
+) {
     if expect_hello
         && !matches!(
-            read_message::<EndpointId>(&mut recv).await,
+            read_message_or_shutdown::<EndpointId>(&mut recv, &mut shutdown).await,
             Ok(WireMessage::Hello { version, .. }) if version == IROH_FILE_PROTOCOL_VERSION
         )
     {
@@ -569,13 +625,14 @@ async fn read_loop(inner: Arc<Inner>, mut recv: RecvStream, expect_hello: bool) 
         return;
     }
     loop {
-        let message = match read_message::<EndpointId>(&mut recv).await {
+        if authorize_frame(&inner).await.is_err() {
+            break;
+        }
+        let message = match read_message_or_shutdown::<EndpointId>(&mut recv, &mut shutdown).await {
             Ok(message) => message,
             Err(_) => break,
         };
-        if let Some(authorize_frame) = &inner.authorize_frame
-            && !authorize_frame().await
-        {
+        if authorize_frame(&inner).await.is_err() {
             break;
         }
         match message {
@@ -593,26 +650,28 @@ async fn read_loop(inner: Arc<Inner>, mut recv: RecvStream, expect_hello: bool) 
                 let _ = sender.send((inner.peer, message));
             }
             WireMessage::Response { id, response } => {
-                if let Some(sender) = inner.pending.lock().await.get(&id) {
-                    let _ = sender.send(response);
+                let sender = inner.pending.lock().await.get(&id).cloned();
+                if let Some(sender) = sender
+                    && sender.send(response).await.is_err()
+                {
+                    break;
                 }
             }
             WireMessage::Request { id, operation } => {
-                let outgoing = inner
+                if inner
                     .outgoing
                     .lock()
                     .expect("Iroh outgoing lock poisoned")
-                    .as_ref()
-                    .cloned();
-                let Some(outgoing) = outgoing else {
+                    .is_none()
+                {
                     break;
-                };
+                }
                 let Ok(permit) = Arc::clone(&inner.request_slots).try_acquire_owned() else {
-                    let _ = send_response(&outgoing, id, FileResponse::Error(FileServiceError::Io))
-                        .await;
+                    let _ =
+                        send_response(&inner, id, FileResponse::Error(FileServiceError::Io)).await;
                     continue;
                 };
-                let (tx, mut rx) = mpsc::channel(16);
+                let (tx, mut rx) = mpsc::channel(MAX_PENDING_RESPONSES);
                 let sessions = inner
                     .sessions
                     .lock()
@@ -620,15 +679,16 @@ async fn read_loop(inner: Arc<Inner>, mut recv: RecvStream, expect_hello: bool) 
                     .as_ref()
                     .cloned();
                 if sessions.is_none_or(|sender| sender.send((inner.peer, operation, tx)).is_err()) {
-                    let _ = send_response(&outgoing, id, FileResponse::Error(FileServiceError::Io))
-                        .await;
+                    let _ =
+                        send_response(&inner, id, FileResponse::Error(FileServiceError::Io)).await;
                     continue;
                 }
+                let response_inner = Arc::clone(&inner);
                 tokio::spawn(async move {
                     let _permit = permit;
                     while let Some(response) = rx.recv().await {
                         let done = !matches!(response, FileResponse::ReadChunk(_));
-                        if send_response(&outgoing, id, response).await.is_err() || done {
+                        if send_response(&response_inner, id, response).await.is_err() || done {
                             break;
                         }
                     }
@@ -641,6 +701,8 @@ async fn read_loop(inner: Arc<Inner>, mut recv: RecvStream, expect_hello: bool) 
 }
 
 fn close_stream(inner: &Inner) {
+    inner.shutdown.send_replace(true);
+    inner.request_slots.close();
     inner
         .outgoing
         .lock()
@@ -675,15 +737,23 @@ async fn fail_pending(inner: &Inner) {
 }
 
 async fn send_response(
-    outgoing: &mpsc::Sender<Vec<u8>>,
+    inner: &Arc<Inner>,
     id: u64,
     response: FileResponse<EndpointId>,
 ) -> Result<(), Error> {
+    let outgoing = inner
+        .outgoing
+        .lock()
+        .expect("Iroh outgoing lock poisoned")
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| Error::new(ErrorKind::BrokenPipe, "Iroh file session is closed"))?;
     match response {
         FileResponse::ReadChunk(bytes) => {
             for chunk in bytes.chunks(MAX_READ_RESPONSE_CHUNK_BYTES) {
+                authorize_frame(inner).await?;
                 send_wire(
-                    outgoing,
+                    &outgoing,
                     WireMessage::<EndpointId>::Response {
                         id,
                         response: FileResponse::ReadChunk(bytes::Bytes::copy_from_slice(chunk)),
@@ -694,13 +764,27 @@ async fn send_response(
             Ok(())
         }
         response => {
+            authorize_frame(inner).await?;
             send_wire(
-                outgoing,
+                &outgoing,
                 WireMessage::<EndpointId>::Response { id, response },
             )
             .await
         }
     }
+}
+
+async fn authorize_frame(inner: &Inner) -> Result<(), Error> {
+    if let Some(authorize) = &inner.authorize_frame
+        && !authorize().await
+    {
+        close_stream(inner);
+        return Err(Error::new(
+            ErrorKind::PermissionDenied,
+            "filesystem sync access revoked",
+        ));
+    }
+    Ok(())
 }
 
 async fn send_wire<P: Serialize>(
@@ -719,6 +803,22 @@ fn encode<P: Serialize>(message: &WireMessage<P>) -> Result<Vec<u8>, Error> {
         ));
     }
     Ok(frame)
+}
+
+async fn read_message_or_shutdown<P: DeserializeOwned + Ord>(
+    recv: &mut RecvStream,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<WireMessage<P>, Error> {
+    if *shutdown.borrow() {
+        return Err(Error::new(
+            ErrorKind::BrokenPipe,
+            "Iroh file session is closed",
+        ));
+    }
+    tokio::select! {
+        result = read_message(recv) => result,
+        _ = shutdown.changed() => Err(Error::new(ErrorKind::BrokenPipe, "Iroh file session is closed")),
+    }
 }
 
 async fn read_message<P: DeserializeOwned + Ord>(
@@ -750,6 +850,45 @@ async fn write_frame(send: &mut SendStream, frame: &[u8]) -> Result<(), Error> {
         .map_err(Error::other)?;
     send.write_all(frame).await.map_err(Error::other)?;
     send.flush().await.map_err(Error::other)
+}
+
+#[cfg(test)]
+mod authorization_tests {
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, atomic::AtomicU64},
+    };
+
+    use tokio::sync::{Mutex, Semaphore, broadcast, mpsc};
+
+    use super::{FrameAuthorizer, Inner, send_response};
+    use crate::{FileResponse, FileServiceError};
+
+    #[tokio::test]
+    async fn denied_policy_cannot_send_filesystem_response() {
+        let (outgoing, mut received) = mpsc::channel(1);
+        let (metadata, _) = broadcast::channel(1);
+        let (sessions, _) = broadcast::channel(1);
+        let authorize: FrameAuthorizer = Arc::new(|| Box::pin(async { false }));
+        let peer = iroh::EndpointId::from_bytes(&[0; 32]).expect("valid fixed endpoint ID");
+        let inner = Arc::new(Inner {
+            peer,
+            authorize_frame: Some(authorize),
+            outgoing: std::sync::Mutex::new(Some(outgoing)),
+            metadata: std::sync::Mutex::new(Some(metadata)),
+            sessions: std::sync::Mutex::new(Some(sessions)),
+            pending: Mutex::new(BTreeMap::new()),
+            request_slots: Arc::new(Semaphore::new(1)),
+            next_id: AtomicU64::new(1),
+        });
+
+        let error = send_response(&inner, 1, FileResponse::Error(FileServiceError::Io))
+            .await
+            .expect_err("policy denial must block response send");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(received.try_recv().is_err());
+    }
 }
 
 fn service_error(error: FileServiceError) -> Error {
