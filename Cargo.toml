@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 authors = ["nathanfaucett@gmail.com"]
 license = "MIT OR Apache-2.0"
-rust-version = "1.98"
+rust-version = "1.99"
 repository = "https://github.com/aicacia/rs-offs"
 
 [workspace.lints.rust]
