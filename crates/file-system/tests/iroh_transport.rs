@@ -305,3 +305,166 @@ async fn syncs_metadata_and_remote_file_sessions_over_one_stream() {
     .await
     .expect("Iroh file transport test timed out");
 }
+
+#[tokio::test]
+async fn shutdown_during_live_multichunk_file_read_closes_stream() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let lookup = MemoryLookup::new();
+        let responder = Endpoint::builder(presets::Minimal)
+            .alpns(vec![b"filesystem-multichunk-cancel-test".to_vec()])
+            .address_lookup(lookup.clone())
+            .bind()
+            .await
+            .expect("bind responder");
+        lookup.add_endpoint_info(responder.addr());
+        let initiator = Endpoint::builder(presets::Minimal)
+            .alpns(vec![b"filesystem-multichunk-cancel-test".to_vec()])
+            .address_lookup(lookup)
+            .bind()
+            .await
+            .expect("bind initiator");
+        let (connection, incoming) = tokio::join!(
+            initiator.connect(responder.id(), b"filesystem-multichunk-cancel-test"),
+            async {
+                responder
+                    .accept()
+                    .await
+                    .expect("incoming connection")
+                    .accept()
+                    .expect("accept connection")
+                    .await
+            }
+        );
+        let connection = connection.expect("connect");
+        let incoming = incoming.expect("accept connection");
+        let resource = IrohResourceDescriptor {
+            owner_subject: "multi-chunk-owner".to_owned(),
+            application_id: "multi-chunk-app".to_owned(),
+            filesystem_id: "multi-chunk-files".to_owned(),
+        };
+        let pause_authorization = Arc::new(AtomicBool::new(false));
+        let checks_after_pause = Arc::new(AtomicUsize::new(0));
+        let (paused_tx, paused_rx) = tokio::sync::oneshot::channel();
+        let paused_tx = Arc::new(std::sync::Mutex::new(Some(paused_tx)));
+        let pause_flag = Arc::clone(&pause_authorization);
+        let check_count = Arc::clone(&checks_after_pause);
+        let pause_signal = Arc::clone(&paused_tx);
+        let initiator_transport =
+            IrohFileTransport::open_authorized(&connection, resource.clone(), move |_| {
+                let pause_flag = Arc::clone(&pause_flag);
+                let check_count = Arc::clone(&check_count);
+                let pause_signal = Arc::clone(&pause_signal);
+                async move {
+                    if pause_flag.load(Ordering::SeqCst)
+                        && check_count.fetch_add(1, Ordering::SeqCst) == 3
+                    {
+                        if let Some(signal) = pause_signal
+                            .lock()
+                            .expect("pause signal lock poisoned")
+                            .take()
+                        {
+                            let _ = signal.send(());
+                        }
+                        core::future::pending::<()>().await;
+                    }
+                    true
+                }
+            })
+            .await
+            .expect("open initiator transport");
+        let (send, recv) = incoming.accept_bi().await.expect("accept stream");
+        let (responder_transport, _, _) =
+            IrohFileTransport::accept_authorized(&incoming, send, recv, |_| async { true })
+                .await
+                .expect("accept responder transport");
+
+        let initiator_root = root();
+        let responder_root = root();
+        let initiator_fs = Arc::new(
+            FileSystem::open(&initiator_root, initiator.id()).expect("open initiator filesystem"),
+        );
+        let responder_fs = Arc::new(
+            FileSystem::open(&responder_root, responder.id()).expect("open responder filesystem"),
+        );
+        initiator_fs
+            .set_residency("", Residency::Full)
+            .await
+            .expect("initiator full residency");
+        responder_fs
+            .set_residency("", Residency::Full)
+            .await
+            .expect("responder full residency");
+        initiator_fs
+            .write("multi-chunk.bin", &vec![0xA5; 1024 * 1024])
+            .await
+            .expect("write file larger than one response chunk");
+
+        let client_transport = responder_transport.clone();
+        let initiator_sync = {
+            let filesystem = Arc::clone(&initiator_fs);
+            tokio::spawn(async move { filesystem.sync_peer(initiator_transport).await })
+        };
+        let responder_sync = {
+            let filesystem = Arc::clone(&responder_fs);
+            tokio::spawn(async move { filesystem.sync_peer(responder_transport).await })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if responder_fs.entry("multi-chunk.bin").await.is_ok() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("file metadata replicates before the read");
+
+        let mut file = client_transport
+            .open(
+                initiator.id(),
+                OpenRequest {
+                    path: "multi-chunk.bin".to_owned(),
+                    revision: None,
+                },
+            )
+            .await
+            .expect("open remote file");
+        pause_authorization.store(true, Ordering::SeqCst);
+        let read_task = tokio::spawn(async move { file.read(0, 1024 * 1024).await });
+        tokio::time::timeout(Duration::from_secs(5), paused_rx)
+            .await
+            .expect("authorization pauses between response chunks")
+            .expect("pause signal sent");
+        initiator.close().await;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3), read_task)
+                .await
+                .expect("endpoint shutdown cancels the pending read")
+                .expect("read task joins")
+                .is_err(),
+            "partial multi-chunk read fails when Iroh shuts down"
+        );
+        tokio::time::timeout(Duration::from_secs(3), responder_sync)
+            .await
+            .expect("peer sync exits after endpoint shutdown")
+            .expect("peer sync task joins")
+            .expect("peer sync exits cleanly");
+        responder_fs
+            .write("still-usable.txt", b"ok")
+            .await
+            .expect("peer filesystem remains usable");
+        assert_eq!(
+            responder_fs
+                .read("still-usable.txt")
+                .await
+                .expect("read peer-local file"),
+            b"ok"
+        );
+        let _ = initiator_sync.await;
+        responder.close().await;
+        std::fs::remove_dir_all(initiator_root).expect("remove initiator data");
+        std::fs::remove_dir_all(responder_root).expect("remove responder data");
+    })
+    .await
+    .expect("live multi-chunk shutdown test timed out");
+}

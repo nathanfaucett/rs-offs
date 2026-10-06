@@ -774,10 +774,27 @@ async fn send_response(
     }
 }
 
-async fn authorize_frame(inner: &Inner) -> Result<(), Error> {
-    if let Some(authorize) = &inner.authorize_frame
-        && !authorize().await
-    {
+async fn authorize_frame(inner: &Arc<Inner>) -> Result<(), Error> {
+    let Some(authorize) = &inner.authorize_frame else {
+        return Ok(());
+    };
+    let mut shutdown = inner.shutdown.subscribe();
+    if *shutdown.borrow() {
+        return Err(Error::new(
+            ErrorKind::BrokenPipe,
+            "Iroh file session is closed",
+        ));
+    }
+    let authorized = tokio::select! {
+        _ = shutdown.changed() => {
+            return Err(Error::new(
+                ErrorKind::BrokenPipe,
+                "Iroh file session is closed",
+            ));
+        }
+        authorized = authorize() => authorized,
+    };
+    if !authorized {
         close_stream(inner);
         return Err(Error::new(
             ErrorKind::PermissionDenied,
@@ -856,12 +873,16 @@ async fn write_frame(send: &mut SendStream, frame: &[u8]) -> Result<(), Error> {
 mod authorization_tests {
     use std::{
         collections::BTreeMap,
-        sync::{Arc, atomic::AtomicU64},
+        sync::{
+            Arc,
+            atomic::{AtomicU64, AtomicUsize, Ordering},
+        },
+        time::Duration,
     };
 
-    use tokio::sync::{Mutex, Semaphore, broadcast, mpsc};
+    use tokio::sync::{Mutex, Semaphore, broadcast, mpsc, oneshot, watch};
 
-    use super::{FrameAuthorizer, Inner, send_response};
+    use super::{FrameAuthorizer, Inner, close_stream, send_response};
     use crate::{FileResponse, FileServiceError};
 
     #[tokio::test]
@@ -880,6 +901,8 @@ mod authorization_tests {
             pending: Mutex::new(BTreeMap::new()),
             request_slots: Arc::new(Semaphore::new(1)),
             next_id: AtomicU64::new(1),
+            transport_handles: AtomicUsize::new(1),
+            shutdown: watch::channel(false).0,
         });
 
         let error = send_response(&inner, 1, FileResponse::Error(FileServiceError::Io))
@@ -888,6 +911,78 @@ mod authorization_tests {
 
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
         assert!(received.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn closing_transport_cancels_policy_wait_between_read_response_chunks() {
+        let (outgoing, mut received) = mpsc::channel(2);
+        let (metadata, _) = broadcast::channel(1);
+        let (sessions, _) = broadcast::channel(1);
+        let (second_check_tx, second_check_rx) = oneshot::channel();
+        let second_check_tx = Arc::new(std::sync::Mutex::new(Some(second_check_tx)));
+        let check_count = Arc::new(AtomicUsize::new(0));
+        let authorize: FrameAuthorizer = Arc::new(move || {
+            let check_count = Arc::clone(&check_count);
+            let second_check_tx = Arc::clone(&second_check_tx);
+            Box::pin(async move {
+                if check_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                    true
+                } else {
+                    if let Some(sender) = second_check_tx
+                        .lock()
+                        .expect("authorization signal lock poisoned")
+                        .take()
+                    {
+                        let _ = sender.send(());
+                    }
+                    core::future::pending::<bool>().await
+                }
+            })
+        });
+        let peer = iroh::EndpointId::from_bytes(&[0; 32]).expect("valid fixed endpoint ID");
+        let inner = Arc::new(Inner {
+            peer,
+            authorize_frame: Some(authorize),
+            outgoing: std::sync::Mutex::new(Some(outgoing)),
+            metadata: std::sync::Mutex::new(Some(metadata)),
+            sessions: std::sync::Mutex::new(Some(sessions)),
+            pending: Mutex::new(BTreeMap::new()),
+            request_slots: Arc::new(Semaphore::new(1)),
+            next_id: AtomicU64::new(1),
+            transport_handles: AtomicUsize::new(1),
+            shutdown: watch::channel(false).0,
+        });
+        let response = FileResponse::ReadChunk(bytes::Bytes::from(vec![
+            0xA5;
+            super::MAX_READ_RESPONSE_CHUNK_BYTES
+                + 1
+        ]));
+        let sender = {
+            let inner = Arc::clone(&inner);
+            tokio::spawn(async move { send_response(&inner, 1, response).await })
+        };
+        let first_frame = tokio::time::timeout(Duration::from_secs(1), received.recv())
+            .await
+            .expect("first response chunk sent")
+            .expect("response frame queued");
+        assert!(first_frame.len() > 4);
+        tokio::time::timeout(Duration::from_secs(1), second_check_rx)
+            .await
+            .expect("authorization pauses before the next chunk")
+            .expect("test signal sent");
+
+        close_stream(&inner);
+        let result = tokio::time::timeout(Duration::from_secs(1), sender)
+            .await
+            .expect("shutdown releases pending authorization")
+            .expect("response task joins");
+        assert_eq!(
+            result
+                .expect_err("closed transport must stop remaining chunks")
+                .kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        assert!(received.try_recv().is_err(), "no second chunk is sent");
     }
 }
 
