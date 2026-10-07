@@ -12,6 +12,7 @@ use file_system::{
     MemoryTransport, OpenRequest, SessionRequest, SyncMessage, Transport,
 };
 use tokio::sync::{Notify, broadcast, mpsc};
+use uuid::Uuid;
 
 #[derive(Clone)]
 struct Exchange {
@@ -61,7 +62,260 @@ impl FileSessionService<u8> for Exchange {
         self.sessions.subscribe()
     }
 }
-use uuid::Uuid;
+
+#[tokio::test]
+async fn generic_session_codecs_preserve_open_read_write_scan_and_close_semantics() {
+    async fn request(
+        sync: &mut file_system::MetadataSync<'_, u8, Exchange>,
+        exchange: &Exchange,
+        operation: FileOperation,
+    ) -> Vec<FileResponse<u8>> {
+        let encoded = postcard::to_allocvec(&operation).expect("encode generic operation");
+        let operation = postcard::from_bytes(&encoded).expect("decode generic operation");
+        let mut response = exchange.queue(operation);
+        sync.pump().await.expect("session executes");
+        let mut responses = Vec::new();
+        while let Some(response) = response.recv().await {
+            let encoded = postcard::to_allocvec(&response).expect("encode generic response");
+            assert_eq!(
+                postcard::from_bytes::<FileResponse<u8>>(&encoded)
+                    .expect("decode generic response"),
+                response
+            );
+            responses.push(response);
+        }
+        responses
+    }
+
+    let root = std::env::temp_dir().join(format!("offs-session-{}", Uuid::now_v7()));
+    let files = FileSystem::open(&root, 1_u8).expect("filesystem opens");
+    files
+        .set_residency("", Residency::Full)
+        .await
+        .expect("full residency");
+    let entry = files
+        .write("folder/shared.txt", b"before")
+        .await
+        .expect("initial write");
+    let exchange = Exchange::new();
+    let mut sync = files.metadata_sync(exchange.clone());
+    let opened = request(
+        &mut sync,
+        &exchange,
+        FileOperation::Open(OpenRequest {
+            path: "folder/shared.txt".into(),
+            revision: None,
+        }),
+    )
+    .await;
+    let [
+        FileResponse::Opened {
+            handle,
+            entry: opened_entry,
+            revision,
+        },
+    ] = opened.as_slice()
+    else {
+        panic!("opened response expected")
+    };
+    assert_eq!(opened_entry, &entry);
+    assert_eq!(*revision, entry.meta.revision);
+    let handle = handle.clone();
+    assert_eq!(
+        request(
+            &mut sync,
+            &exchange,
+            FileOperation::Read {
+                handle: handle.clone(),
+                offset: 0,
+                length: file_system::MAX_FILE_READ_LENGTH + 1
+            }
+        )
+        .await,
+        vec![FileResponse::Error(FileServiceError::InvalidReadLength)]
+    );
+    assert_eq!(
+        request(
+            &mut sync,
+            &exchange,
+            FileOperation::Read {
+                handle: handle.clone(),
+                offset: 0,
+                length: 32
+            }
+        )
+        .await,
+        vec![
+            FileResponse::ReadChunk(bytes::Bytes::from_static(b"before")),
+            FileResponse::ReadEnd
+        ]
+    );
+    let written = request(
+        &mut sync,
+        &exchange,
+        FileOperation::Write {
+            handle: handle.clone(),
+            expected_revision: entry.meta.revision,
+            offset: 0,
+            data: bytes::Bytes::from_static(b"after!"),
+        },
+    )
+    .await;
+    let [FileResponse::Written { count: 6, revision }] = written.as_slice() else {
+        panic!("written response expected")
+    };
+    assert_ne!(*revision, entry.meta.revision);
+    assert_eq!(
+        files
+            .revision("folder/shared.txt")
+            .await
+            .expect("committed revision"),
+        *revision
+    );
+    assert_eq!(
+        files
+            .read("folder/shared.txt")
+            .await
+            .expect("committed bytes"),
+        b"after!"
+    );
+    assert_eq!(
+        request(
+            &mut sync,
+            &exchange,
+            FileOperation::Read {
+                handle: handle.clone(),
+                offset: 0,
+                length: 32
+            }
+        )
+        .await,
+        vec![
+            FileResponse::ReadChunk(bytes::Bytes::from_static(b"after!")),
+            FileResponse::ReadEnd
+        ]
+    );
+    let directory = request(
+        &mut sync,
+        &exchange,
+        FileOperation::Open(OpenRequest {
+            path: "folder".into(),
+            revision: None,
+        }),
+    )
+    .await;
+    let [
+        FileResponse::Opened {
+            handle: directory, ..
+        },
+    ] = directory.as_slice()
+    else {
+        panic!("directory opened response expected")
+    };
+    let scanned = request(
+        &mut sync,
+        &exchange,
+        FileOperation::Scan {
+            handle: directory.clone(),
+            cursor: None,
+            limit: 1,
+        },
+    )
+    .await;
+    let [FileResponse::Page(page)] = scanned.as_slice() else {
+        panic!("scan page expected")
+    };
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].path, "folder/shared.txt");
+    assert_eq!(page.next, None);
+    for handle in [directory.clone(), handle.clone()] {
+        assert_eq!(
+            request(&mut sync, &exchange, FileOperation::Close { handle }).await,
+            vec![FileResponse::Closed]
+        );
+    }
+    assert_eq!(
+        request(
+            &mut sync,
+            &exchange,
+            FileOperation::Read {
+                handle,
+                offset: 0,
+                length: 1
+            }
+        )
+        .await,
+        vec![FileResponse::Error(FileServiceError::NotFound)]
+    );
+    drop(sync);
+    files
+        .append("folder/shared.txt", b" offline")
+        .await
+        .expect("local write after session shutdown");
+    assert_eq!(
+        files
+            .read("folder/shared.txt")
+            .await
+            .expect("offline bytes"),
+        b"after! offline"
+    );
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[tokio::test]
+async fn generic_metadata_codec_preserves_live_snapshots_and_tombstones() {
+    let source_root = std::env::temp_dir().join(format!("offs-codec-{}", Uuid::now_v7()));
+    let target_root = std::env::temp_dir().join(format!("offs-codec-{}", Uuid::now_v7()));
+    let source = FileSystem::open(&source_root, 1_u8).expect("source opens");
+    let target = FileSystem::open(&target_root, 2_u8).expect("target opens");
+    source
+        .set_residency("", Residency::Full)
+        .await
+        .expect("source full");
+    let live = source.write("live", b"content").await.expect("live file");
+    source
+        .write("deleted", b"old")
+        .await
+        .expect("file before deletion");
+    source.delete("deleted").await.expect("tombstone");
+    let network = MemoryNetwork::new(32);
+    let source_transport = network.transport(1);
+    let target_transport = network.transport(2);
+    let mut capture = target_transport.subscribe();
+    source
+        .metadata_sync(source_transport.clone())
+        .announce()
+        .await
+        .expect("export snapshots");
+    let message = loop {
+        let (_, message) = capture.recv().await.expect("metadata message");
+        if matches!(message, SyncMessage::SnapshotDelta { .. }) {
+            break message;
+        }
+    };
+    let SyncMessage::SnapshotDelta { snapshots } = &message else {
+        panic!("snapshot delta expected")
+    };
+    assert_eq!(snapshots.len(), 2);
+    let frame = file_system::encode_sync_message(&message).expect("encode generic snapshot codec");
+    assert_eq!(frame[0], file_system::FILESYSTEM_SYNC_PROTOCOL_VERSION);
+    let decoded =
+        file_system::decode_sync_message::<u8>(&frame).expect("decode generic snapshot codec");
+    assert_eq!(decoded, message);
+    let mut receiver = target.metadata_sync(target_transport);
+    source_transport
+        .send(2, decoded)
+        .await
+        .expect("queue decoded snapshot set");
+    receiver.pump().await.expect("import decoded snapshot set");
+    assert_eq!(target.entry("live").await.expect("live metadata"), live);
+    assert!(matches!(
+        target.entry("deleted").await,
+        Err(Error::NotFound)
+    ));
+    fs::remove_dir_all(source_root).expect("source cleanup");
+    fs::remove_dir_all(target_root).expect("target cleanup");
+}
 
 #[tokio::test]
 async fn queued_snapshots_recheck_local_decision_before_import() {

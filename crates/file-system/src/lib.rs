@@ -6,8 +6,7 @@ mod file_service;
 mod file_system;
 #[cfg(test)]
 mod file_system_tests;
-#[cfg(feature = "iroh")]
-mod iroh_transport;
+
 mod memory_transport;
 mod operation;
 mod path;
@@ -21,16 +20,13 @@ mod transport;
 
 pub use error::Error;
 pub use file_meta::{FileKind, FileMeta};
-pub(crate) use file_service::MAX_FILE_READ_LENGTH;
+
 pub use file_service::{
     DEFAULT_SCAN_LIMIT, FileFuture, FileHandle, FileHandleId, FileOperation, FileResponse,
-    FileServiceError, LocalFileHandle, OpenRequest, ScanPage,
+    FileServiceError, LocalFileHandle, MAX_FILE_READ_LENGTH, OpenRequest, ScanPage,
 };
 pub use file_system::{Entry, FileSystem};
-#[cfg(feature = "iroh")]
-pub use iroh_transport::{
-    FILESYSTEM_STREAM_KIND, IrohFileHandle, IrohFileTransport, IrohResourceDescriptor,
-};
+
 pub use memory_transport::{MemoryNetwork, MemoryTransport, MemoryTransportError};
 pub use operation::{OperationControl, RemoteOperation};
 pub use protocol::{
