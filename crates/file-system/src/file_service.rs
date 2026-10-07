@@ -94,8 +94,8 @@ where
         Clone + core::fmt::Debug + Ord + serde::Serialize + serde::de::DeserializeOwned + 'static,
 {
     file_system: &'a FileSystem<PeerId>,
-    path: String,
-    revision: Uuid,
+    pub(crate) path: String,
+    pub(crate) revision: Uuid,
     kind: FileKind,
 }
 
@@ -165,7 +165,10 @@ where
             if self.kind == FileKind::Directory {
                 return Err(Error::IsDirectory);
             }
-            let mut stream = self.file_system.stream(&self.path, 64 * 1024).await?;
+            let mut stream = self
+                .file_system
+                .stream_revision(&self.path, Some(self.revision), 64 * 1024)
+                .await?;
             let mut remaining = offset;
             let mut output = BytesMut::with_capacity(length as usize);
             while let Some(chunk) = stream.next().await {

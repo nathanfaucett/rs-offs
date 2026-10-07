@@ -4,6 +4,8 @@ mod error;
 mod file_meta;
 mod file_service;
 mod file_system;
+#[cfg(test)]
+mod file_system_tests;
 #[cfg(feature = "iroh")]
 mod iroh_transport;
 mod memory_transport;
@@ -12,6 +14,7 @@ mod path;
 mod protocol;
 mod residency;
 mod resource;
+mod staged_content;
 mod stream;
 mod sync;
 mod transport;

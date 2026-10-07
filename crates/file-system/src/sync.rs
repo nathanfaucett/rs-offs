@@ -16,12 +16,6 @@ pub enum SyncMessage<PeerId> {
     SnapshotDelta { snapshots: Vec<KvSnapshot> },
 }
 
-struct ServerHandle<'a, PeerId> {
-    handle: Box<dyn FileHandle<PeerId, Error = Error> + 'a>,
-    path: String,
-    revision: uuid::Uuid,
-}
-
 pub struct MetadataSync<'a, PeerId, T>
 where
     PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + Send + Sync + 'static,
@@ -32,7 +26,7 @@ where
     incoming: broadcast::Receiver<IncomingMessage<PeerId>>,
     sessions: broadcast::Receiver<SessionRequest<PeerId>>,
     changes: broadcast::Receiver<()>,
-    handles: BTreeMap<(PeerId, FileHandleId), ServerHandle<'a, PeerId>>,
+    handles: BTreeMap<(PeerId, FileHandleId), crate::LocalFileHandle<'a, PeerId>>,
     last_snapshots: Vec<KvSnapshot>,
     control: OperationControl<PeerId>,
 }
@@ -114,15 +108,15 @@ where
         }
         let provider = self.provider(&entry.meta).await?;
         let handle = self
-            .transport
-            .open(
-                provider,
+            .control
+            .wait(self.transport.open(
+                provider.clone(),
                 OpenRequest {
                     path: path.to_owned(),
                     revision: Some(revision),
                 },
-            )
-            .await
+            ))
+            .await?
             .map_err(|_| Error::Offline)?;
         let content =
             futures_util::stream::try_unfold((handle, 0_u64), |(mut handle, offset)| async move {
@@ -131,6 +125,7 @@ where
                     .await
                     .map_err(|_| Error::Offline)?;
                 if bytes.is_empty() {
+                    Box::new(handle).close().await.map_err(|_| Error::Offline)?;
                     return Ok(None);
                 }
                 let next_offset = offset.checked_add(bytes.len() as u64).ok_or_else(|| {
@@ -142,7 +137,13 @@ where
                 Ok(Some((bytes, (handle, next_offset))))
             });
         self.file_system
-            .store_content(entry.meta.file_id, revision, Box::pin(content))
+            .store_content(
+                entry.meta.file_id,
+                revision,
+                Box::pin(content),
+                &self.control,
+                provider,
+            )
             .await
     }
 
@@ -297,7 +298,7 @@ where
         response: crate::SessionResponse<PeerId>,
     ) -> Result<(), Error> {
         let result: Result<Vec<FileResponse<PeerId>>, Error> = async {
-            let _execution = self.control.wait(self.file_system.execution.lock()).await?;
+            let execution = self.control.wait(self.file_system.execution.lock()).await?;
             let path = match &operation {
                 FileOperation::Open(request) => Some(request.path.clone()),
                 FileOperation::Read { handle, .. }
@@ -317,6 +318,12 @@ where
                     },
                 )
                 .await?;
+            let _execution = if matches!(operation, FileOperation::Write { .. }) {
+                Some(execution)
+            } else {
+                drop(execution);
+                None
+            };
             match operation {
                 FileOperation::Open(request) => {
                     let entry = self.file_system.entry(&request.path).await?;
@@ -327,17 +334,9 @@ where
                     {
                         Err(Error::StaleRevision)
                     } else {
-                        let path = request.path.clone();
                         let id = self.transport.allocate_handle(&peer, &request);
                         let handle = self.file_system.open_handle(request).await?;
-                        self.handles.insert(
-                            (peer.clone(), id.clone()),
-                            ServerHandle {
-                                handle: Box::new(handle),
-                                path,
-                                revision,
-                            },
-                        );
+                        self.handles.insert((peer.clone(), id.clone()), handle);
                         Ok(vec![FileResponse::Opened {
                             handle: id,
                             entry,
@@ -357,7 +356,7 @@ where
                         .handles
                         .get_mut(&(peer.clone(), handle))
                         .ok_or(Error::NotFound)?;
-                    let bytes = handle.handle.read(offset, length).await?;
+                    let bytes = handle.read(offset, length).await?;
                     Ok(vec![FileResponse::ReadChunk(bytes), FileResponse::ReadEnd])
                 }
                 FileOperation::Write {
@@ -393,16 +392,14 @@ where
                         .handles
                         .get_mut(&(peer.clone(), handle))
                         .ok_or(Error::NotFound)?;
-                    Ok(vec![FileResponse::Page(
-                        state.handle.scan(cursor, limit).await?,
-                    )])
+                    Ok(vec![FileResponse::Page(state.scan(cursor, limit).await?)])
                 }
                 FileOperation::Close { handle } => {
                     let state = self
                         .handles
                         .remove(&(peer, handle))
                         .ok_or(Error::NotFound)?;
-                    state.handle.close().await?;
+                    state.close().await?;
                     Ok(vec![FileResponse::Closed])
                 }
             }

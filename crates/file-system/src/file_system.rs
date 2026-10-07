@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Mutex,
@@ -15,10 +15,11 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::{
-    Error, FileKind, FileMeta, ReadStream, Residency,
+    Error, FileKind, FileMeta, OperationControl, ReadStream, RemoteOperation, Residency,
     file_service::{ScanPage, scan_page},
     path::{directory, file},
     residency::ResidencyRules,
+    staged_content::StagedContent,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -39,6 +40,10 @@ where
     residency: Mutex<ResidencyRules>,
     pub(crate) changes: broadcast::Sender<()>,
     pub(crate) execution: tokio::sync::Mutex<()>,
+    #[cfg(test)]
+    pub(crate) content_fault: Mutex<Option<crate::staged_content::ContentStep>>,
+    #[cfg(test)]
+    pub(crate) content_action: Mutex<Option<crate::staged_content::ContentAction>>,
 }
 
 impl<PeerId> FileSystem<PeerId>
@@ -63,6 +68,10 @@ where
             residency: Mutex::new(ResidencyRules::default()),
             changes,
             execution: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            content_fault: Mutex::new(None),
+            #[cfg(test)]
+            content_action: Mutex::new(None),
         })
     }
 
@@ -74,6 +83,7 @@ where
     }
 
     pub async fn set_residency(&self, path: &str, residency: Residency) -> Result<(), Error> {
+        let _execution = self.execution.lock().await;
         directory(path)?;
         if residency == Residency::Full {
             self.verify_content(path).await?;
@@ -123,11 +133,12 @@ where
     }
 
     pub async fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let _execution = self.execution.lock().await;
         let entry = self.entry(path).await?;
         if entry.meta.kind == FileKind::Directory {
             return Err(Error::IsDirectory);
         }
-        fs::read(self.content_path(entry.meta.file_id)).map_err(|error| {
+        fs::read(self.content_path(entry.meta.file_id, entry.meta.revision)).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 Error::ContentUnavailable
             } else {
@@ -137,12 +148,25 @@ where
     }
 
     pub async fn stream(&self, path: &str, chunk_size: usize) -> Result<ReadStream, Error> {
+        self.stream_revision(path, None, chunk_size).await
+    }
+
+    pub(crate) async fn stream_revision(
+        &self,
+        path: &str,
+        expected_revision: Option<Uuid>,
+        chunk_size: usize,
+    ) -> Result<ReadStream, Error> {
+        let _execution = self.execution.lock().await;
         let entry = self.entry(path).await?;
+        if expected_revision.is_some_and(|revision| entry.meta.revision != revision) {
+            return Err(Error::StaleRevision);
+        }
         if entry.meta.kind == FileKind::Directory {
             return Err(Error::IsDirectory);
         }
         ReadStream::new(
-            File::open(self.content_path(entry.meta.file_id))?,
+            File::open(self.content_path(entry.meta.file_id, entry.meta.revision))?,
             chunk_size,
         )
     }
@@ -158,8 +182,12 @@ where
             None => FileMeta::file(Uuid::now_v7(), self.node_id.clone()),
         };
         meta.revision = Uuid::now_v7();
-        write_file(&self.content_path(meta.file_id), content)?;
+        let mut stage = StagedContent::new(self.content_path(meta.file_id, meta.revision))?;
+        self.stage_write(&mut stage, content)?;
+        self.stage_sync(&stage)?;
+        self.stage_publish(&mut stage)?;
         self.put(path, meta.clone()).await?;
+        stage.commit();
         Ok(Entry {
             path: path.to_owned(),
             meta,
@@ -200,15 +228,17 @@ where
                 "write is too large",
             ))
         })?;
-        let mut content = OpenOptions::new()
-            .write(true)
-            .open(self.content_path(entry.meta.file_id))?;
-        content.seek(SeekFrom::Start(offset))?;
-        content.write_all(&data)?;
-        content.sync_all()?;
+        let previous = self.content_path(entry.meta.file_id, entry.meta.revision);
         let mut meta = entry.meta;
         meta.revision = Uuid::now_v7();
+        let mut stage = StagedContent::new(self.content_path(meta.file_id, meta.revision))?;
+        stage.copy_from(&previous)?;
+        stage.file.seek(SeekFrom::Start(offset))?;
+        self.stage_write(&mut stage, &data)?;
+        self.stage_sync(&stage)?;
+        self.stage_publish(&mut stage)?;
         self.put(path, meta).await?;
+        stage.commit();
         Ok(length)
     }
 
@@ -220,14 +250,18 @@ where
         if entry.meta.kind == FileKind::Directory {
             return Err(Error::IsDirectory);
         }
-        let mut file = OpenOptions::new()
-            .append(true)
-            .open(self.content_path(entry.meta.file_id))?;
-        file.write_all(content)?;
-        file.sync_all()?;
+        let previous = self.content_path(entry.meta.file_id, entry.meta.revision);
         let mut meta = entry.meta;
         meta.revision = Uuid::now_v7();
-        self.put(path, meta).await
+        let mut stage = StagedContent::new(self.content_path(meta.file_id, meta.revision))?;
+        stage.copy_from(&previous)?;
+        stage.file.seek(SeekFrom::End(0))?;
+        self.stage_write(&mut stage, content)?;
+        self.stage_sync(&stage)?;
+        self.stage_publish(&mut stage)?;
+        self.put(path, meta).await?;
+        stage.commit();
+        Ok(())
     }
 
     pub async fn create_dir(&self, path: &str) -> Result<Entry<PeerId>, Error> {
@@ -324,9 +358,18 @@ where
             }
         }
         let mut transaction = self.metadata.transaction().await.map_err(metadata_error)?;
+        let mut prepared = Vec::new();
         for (_, destination, meta) in &moves {
+            let previous = self.content_path(meta.file_id, meta.revision);
             let mut meta = meta.clone();
             meta.revision = Uuid::now_v7();
+            if meta.kind == FileKind::File && previous.is_file() {
+                let mut stage = StagedContent::new(self.content_path(meta.file_id, meta.revision))?;
+                stage.copy_from(&previous)?;
+                self.stage_sync(&stage)?;
+                self.stage_publish(&mut stage)?;
+                prepared.push(stage);
+            }
             transaction
                 .set(
                     destination,
@@ -342,6 +385,9 @@ where
             transaction.delete(&source).await.map_err(metadata_error)?;
         }
         transaction.commit().await.map_err(metadata_error)?;
+        for stage in prepared {
+            stage.commit();
+        }
         let _ = self.changes.send(());
         Ok(())
     }
@@ -356,7 +402,7 @@ where
         for (entry_path, meta) in self.all_metadata().await? {
             if within(path, &entry_path)
                 && meta.kind == FileKind::File
-                && !self.content_path(meta.file_id).is_file()
+                && !self.content_path(meta.file_id, meta.revision).is_file()
             {
                 return Err(Error::ContentUnavailable);
             }
@@ -376,7 +422,8 @@ where
                         && matches!(self.residency(other_path), Ok(Residency::Full))
                 });
                 if !retained
-                    && let Err(error) = fs::remove_file(self.content_path(file_id))
+                    && let Err(error) =
+                        fs::remove_dir_all(self.content_root.join(file_id.to_string()))
                     && error.kind() != std::io::ErrorKind::NotFound
                 {
                     return Err(error.into());
@@ -409,8 +456,10 @@ where
         Ok(())
     }
 
-    fn content_path(&self, file_id: Uuid) -> PathBuf {
-        self.content_root.join(file_id.to_string())
+    fn content_path(&self, file_id: Uuid, revision: Uuid) -> PathBuf {
+        self.content_root
+            .join(file_id.to_string())
+            .join(revision.to_string())
     }
 
     pub async fn revision(&self, path: &str) -> Result<Uuid, Error> {
@@ -425,7 +474,7 @@ where
             return Err(Error::ContentUnavailable);
         }
 
-        let content = fs::read(self.content_path(file_id)).map_err(|error| {
+        let content = fs::read(self.content_path(file_id, revision)).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 Error::ContentUnavailable
             } else {
@@ -440,34 +489,83 @@ where
         file_id: Uuid,
         revision: Uuid,
         stream: S,
+        control: &OperationControl<PeerId>,
+        peer: PeerId,
     ) -> Result<(), Error>
     where
         S: futures_core::Stream<Item = Result<Bytes, Error>>,
     {
-        if !self.has_revision(file_id, revision).await? {
-            return Ok(());
+        if !control.wait(self.has_revision(file_id, revision)).await?? {
+            return Err(Error::StaleRevision);
         }
-        let path = self.content_path(file_id);
-        let temporary = path.with_extension(format!("{}.tmp", Uuid::now_v7()));
-        let result = (|| -> Result<File, Error> { Ok(File::create(&temporary)?) })();
-        let mut file = match result {
-            Ok(file) => file,
-            Err(error) => return Err(error),
-        };
+        let path = self.content_path(file_id, revision);
+        let mut stage = StagedContent::new(path.clone())?;
         futures_util::pin_mut!(stream);
-        while let Some(chunk) = stream.next().await {
-            if let Err(error) = file.write_all(&chunk?) {
-                let _ = fs::remove_file(&temporary);
-                return Err(error.into());
-            }
+        while let Some(chunk) = control.wait(stream.next()).await? {
+            self.stage_write(&mut stage, &chunk?)?;
         }
-        file.sync_all()?;
+        self.stage_sync(&stage)?;
+        let _execution = control.wait(self.execution.lock()).await?;
         if !self.has_revision(file_id, revision).await? {
-            let _ = fs::remove_file(&temporary);
-            return Ok(());
+            return Err(Error::StaleRevision);
         }
-        fs::rename(temporary, path)?;
+        control
+            .admit(peer, RemoteOperation::PublishContent { file_id, revision })
+            .await?;
+        if !path.is_file() {
+            self.stage_publish(&mut stage)?;
+            stage.commit();
+        }
         Ok(())
+    }
+
+    fn stage_write(&self, stage: &mut StagedContent, bytes: &[u8]) -> Result<(), Error> {
+        #[cfg(test)]
+        {
+            if *self.content_fault.lock().expect("content fault lock")
+                == Some(crate::staged_content::ContentStep::Write)
+            {
+                stage.file.write_all(&bytes[..bytes.len() / 2])?;
+            }
+            self.content_checkpoint(crate::staged_content::ContentStep::Write)?;
+        }
+        stage.file.write_all(bytes)?;
+        Ok(())
+    }
+
+    fn stage_sync(&self, stage: &StagedContent) -> Result<(), Error> {
+        #[cfg(test)]
+        self.content_checkpoint(crate::staged_content::ContentStep::Sync)?;
+        stage.file.sync_all()?;
+        Ok(())
+    }
+
+    fn stage_publish(&self, stage: &mut StagedContent) -> Result<(), Error> {
+        #[cfg(test)]
+        self.content_checkpoint(crate::staged_content::ContentStep::Publish)?;
+        stage.publish()
+    }
+
+    #[cfg(test)]
+    fn content_checkpoint(&self, step: crate::staged_content::ContentStep) -> Result<(), Error> {
+        let action = {
+            let mut action = self.content_action.lock().expect("content action lock");
+            if action.as_ref().is_some_and(|(at, _)| *at == step) {
+                action.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_, action)) = action {
+            action();
+        }
+        let mut fault = self.content_fault.lock().expect("content fault lock");
+        if *fault == Some(step) {
+            fault.take();
+            Err(std::io::Error::other(format!("injected {step:?} failure")).into())
+        } else {
+            Ok(())
+        }
     }
 
     async fn has_revision(&self, file_id: Uuid, revision: Uuid) -> Result<bool, Error> {
@@ -510,6 +608,8 @@ where
     }
 
     async fn put(&self, path: &str, meta: FileMeta<PeerId>) -> Result<(), Error> {
+        #[cfg(test)]
+        self.content_checkpoint(crate::staged_content::ContentStep::Metadata)?;
         self.metadata
             .set(
                 path,
@@ -523,21 +623,6 @@ where
         let _ = self.changes.send(());
         Ok(())
     }
-}
-
-fn write_file(path: &Path, content: &[u8]) -> Result<(), Error> {
-    let temporary = path.with_extension(format!("{}.tmp", Uuid::now_v7()));
-    let result = (|| {
-        let mut file = File::create(&temporary)?;
-        file.write_all(content)?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temporary);
-    }
-    result
 }
 
 fn within(scope: &str, path: &str) -> bool {

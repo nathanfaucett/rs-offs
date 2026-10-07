@@ -295,12 +295,17 @@ where
         Box::pin(async move {
             let responses = MemoryTransport::collect(receiver).await;
             let mut bytes = Vec::new();
+            let mut completed = false;
             for response in responses {
                 match response {
                     FileResponse::ReadChunk(chunk) => bytes.extend_from_slice(&chunk),
+                    FileResponse::ReadEnd => completed = true,
                     FileResponse::Error(error) => return Err(MemoryTransportError::Service(error)),
                     _ => {}
                 }
+            }
+            if !completed {
+                return Err(MemoryTransportError::SessionClosed);
             }
             Ok(Bytes::from(bytes))
         })
