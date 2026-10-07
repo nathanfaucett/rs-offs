@@ -72,22 +72,18 @@ where
     pub async fn announce(&self) -> Result<(), Error> {
         let snapshots = self.export_snapshots().await?;
         for peer in self.transport.peers() {
-            self.transport
-                .send(
-                    peer.clone(),
-                    SyncMessage::SnapshotRequest { peer: peer.clone() },
-                )
-                .await
-                .map_err(transport_error)?;
-            self.transport
-                .send(
-                    peer,
-                    SyncMessage::SnapshotDelta {
-                        snapshots: snapshots.clone(),
-                    },
-                )
-                .await
-                .map_err(transport_error)?;
+            self.send_metadata(
+                peer.clone(),
+                SyncMessage::SnapshotRequest { peer: peer.clone() },
+            )
+            .await?;
+            self.send_metadata(
+                peer,
+                SyncMessage::SnapshotDelta {
+                    snapshots: snapshots.clone(),
+                },
+            )
+            .await?;
         }
         Ok(())
     }
@@ -228,15 +224,34 @@ where
     async fn publish_changes(&mut self) -> Result<(), Error> {
         let snapshots = self.export_snapshots().await?;
         if snapshots != self.last_snapshots {
-            self.transport
-                .broadcast(SyncMessage::SnapshotDelta {
-                    snapshots: snapshots.clone(),
-                })
-                .await
-                .map_err(transport_error)?;
+            for peer in self.transport.peers() {
+                self.send_metadata(
+                    peer,
+                    SyncMessage::SnapshotDelta {
+                        snapshots: snapshots.clone(),
+                    },
+                )
+                .await?;
+            }
             self.last_snapshots = snapshots;
         }
         Ok(())
+    }
+
+    async fn send_metadata(&self, peer: PeerId, message: SyncMessage<PeerId>) -> Result<(), Error> {
+        match self
+            .control
+            .admit(peer.clone(), RemoteOperation::ExportSnapshots)
+            .await
+        {
+            Ok(()) => {}
+            Err(Error::PermissionDenied) => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        self.control
+            .wait(self.transport.send(peer, message))
+            .await?
+            .map_err(transport_error)
     }
 
     async fn provider(&self, meta: &crate::FileMeta<PeerId>) -> Result<PeerId, Error> {
@@ -254,20 +269,9 @@ where
     async fn receive(&mut self, peer: PeerId, message: SyncMessage<PeerId>) -> Result<(), Error> {
         match message {
             SyncMessage::SnapshotRequest { peer: _ } => {
-                match self
-                    .control
-                    .admit(peer.clone(), RemoteOperation::ExportSnapshots)
-                    .await
-                {
-                    Ok(()) => {}
-                    Err(Error::PermissionDenied) => return Ok(()),
-                    Err(error) => return Err(error),
-                }
                 let snapshots = self.export_snapshots().await?;
-                self.transport
-                    .send(peer, SyncMessage::SnapshotDelta { snapshots })
+                self.send_metadata(peer, SyncMessage::SnapshotDelta { snapshots })
                     .await
-                    .map_err(transport_error)
             }
             SyncMessage::SnapshotDelta { snapshots } => {
                 let _execution = self.control.wait(self.file_system.execution.lock()).await?;

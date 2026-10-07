@@ -23,7 +23,7 @@ type Decision<PeerId> = dyn Fn(PeerId, RemoteOperation) -> FileFuture<'static, b
 
 /// Caller-local policy and one-way cancellation for one sync executor.
 /// Admission is linearized by the final cancellation read after the decision completes.
-/// Once admitted, the executor finishes the operation without selecting on cancellation.
+/// Admitted mutations finish without cancellation selection; outbound delivery waits are cancellable.
 pub struct OperationControl<PeerId> {
     decision: Arc<Decision<PeerId>>,
     cancelled: watch::Sender<bool>,

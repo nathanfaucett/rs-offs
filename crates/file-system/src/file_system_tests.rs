@@ -234,8 +234,10 @@ async fn cancellation_while_queued_for_execution_never_reaches_policy_or_mutatio
         .expect("initial content");
     let decisions = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let policy = std::sync::Arc::clone(&decisions);
-    let control = OperationControl::new(move |_, _| {
-        policy.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let control = OperationControl::new(move |_, operation| {
+        if matches!(operation, crate::RemoteOperation::Session { .. }) {
+            policy.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         Box::pin(async { true })
     });
     let network = MemoryNetwork::new(32);
