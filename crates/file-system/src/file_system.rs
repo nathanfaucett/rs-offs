@@ -38,6 +38,7 @@ where
     node_id: PeerId,
     residency: Mutex<ResidencyRules>,
     pub(crate) changes: broadcast::Sender<()>,
+    pub(crate) execution: tokio::sync::Mutex<()>,
 }
 
 impl<PeerId> FileSystem<PeerId>
@@ -61,6 +62,7 @@ where
             node_id,
             residency: Mutex::new(ResidencyRules::default()),
             changes,
+            execution: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -146,6 +148,7 @@ where
     }
 
     pub async fn write(&self, path: &str, content: &[u8]) -> Result<Entry<PeerId>, Error> {
+        let _execution = self.execution.lock().await;
         file(path)?;
         self.require_full(path)?;
         self.ensure_parent_directories(path).await?;
@@ -164,6 +167,18 @@ where
     }
 
     pub async fn write_at(
+        &self,
+        path: &str,
+        expected_revision: Uuid,
+        offset: u64,
+        data: Bytes,
+    ) -> Result<u32, Error> {
+        let _execution = self.execution.lock().await;
+        self.write_at_inner(path, expected_revision, offset, data)
+            .await
+    }
+
+    pub(crate) async fn write_at_inner(
         &self,
         path: &str,
         expected_revision: Uuid,
@@ -198,6 +213,7 @@ where
     }
 
     pub async fn append(&self, path: &str, content: &[u8]) -> Result<(), Error> {
+        let _execution = self.execution.lock().await;
         file(path)?;
         self.require_full(path)?;
         let entry = self.entry(path).await?;
@@ -215,6 +231,7 @@ where
     }
 
     pub async fn create_dir(&self, path: &str) -> Result<Entry<PeerId>, Error> {
+        let _execution = self.execution.lock().await;
         file(path)?;
         self.require_full(path)?;
         self.ensure_parent_directories(path).await?;
@@ -273,6 +290,7 @@ where
     }
 
     pub async fn delete(&self, path: &str) -> Result<(), Error> {
+        let _execution = self.execution.lock().await;
         let _ = self.entry(path).await?;
         self.metadata.delete(path).await.map_err(metadata_error)?;
         let _ = self.changes.send(());
@@ -280,6 +298,7 @@ where
     }
 
     pub async fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
+        let _execution = self.execution.lock().await;
         file(from)?;
         file(to)?;
         let entry = self.entry(from).await?;

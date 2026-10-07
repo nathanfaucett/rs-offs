@@ -6,8 +6,8 @@ use tokio::sync::broadcast;
 
 use crate::{
     Error, FileHandle, FileHandleId, FileOperation, FileResponse, FileServiceError,
-    FileSessionService, FileSystem, IncomingMessage, MAX_FILE_READ_LENGTH, OpenRequest, Residency,
-    SessionRequest,
+    FileSessionService, FileSystem, IncomingMessage, MAX_FILE_READ_LENGTH, OpenRequest,
+    OperationControl, RemoteOperation, Residency, SessionRequest,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -34,6 +34,7 @@ where
     changes: broadcast::Receiver<()>,
     handles: BTreeMap<(PeerId, FileHandleId), ServerHandle<'a, PeerId>>,
     last_snapshots: Vec<KvSnapshot>,
+    control: OperationControl<PeerId>,
 }
 
 impl<PeerId> FileSystem<PeerId>
@@ -52,6 +53,7 @@ where
             transport,
             handles: BTreeMap::new(),
             last_snapshots: Vec::new(),
+            control: OperationControl::default(),
         }
     }
 
@@ -68,6 +70,11 @@ where
     PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + Send + Sync + 'static,
     T: FileSessionService<PeerId> + Sync + Clone + Send + 'static,
 {
+    pub fn with_operation_control(mut self, control: OperationControl<PeerId>) -> Self {
+        self.control = control;
+        self
+    }
+
     pub async fn announce(&self) -> Result<(), Error> {
         let snapshots = self.export_snapshots().await?;
         for peer in self.transport.peers() {
@@ -151,6 +158,8 @@ where
         self.last_snapshots = self.export_snapshots().await?;
         loop {
             tokio::select! {
+                biased;
+                () = self.control.cancelled() => return Err(Error::Cancelled),
                 result = self.changes.recv() => match result {
                     Ok(()) => self.publish_changes().await?,
                     Err(broadcast::error::RecvError::Lagged(_)) => self.publish_changes().await?,
@@ -171,6 +180,22 @@ where
     }
 
     pub async fn pump(&mut self) -> Result<(), Error> {
+        let result = self.pump_inner().await;
+        if self.control.is_cancelled() {
+            self.handles.clear();
+            while self.sessions.try_recv().is_ok() {}
+            while self.incoming.try_recv().is_ok() {}
+        }
+        result
+    }
+
+    async fn pump_inner(&mut self) -> Result<(), Error> {
+        if self.control.is_cancelled() {
+            self.handles.clear();
+            while self.sessions.try_recv().is_ok() {}
+            while self.incoming.try_recv().is_ok() {}
+            return Err(Error::Cancelled);
+        }
         while self.changes.try_recv().is_ok() {}
         self.publish_changes().await?;
         loop {
@@ -228,6 +253,15 @@ where
     async fn receive(&mut self, peer: PeerId, message: SyncMessage<PeerId>) -> Result<(), Error> {
         match message {
             SyncMessage::SnapshotRequest { peer: _ } => {
+                match self
+                    .control
+                    .admit(peer.clone(), RemoteOperation::ExportSnapshots)
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(Error::PermissionDenied) => return Ok(()),
+                    Err(error) => return Err(error),
+                }
                 let snapshots = self.export_snapshots().await?;
                 self.transport
                     .send(peer, SyncMessage::SnapshotDelta { snapshots })
@@ -235,6 +269,16 @@ where
                     .map_err(transport_error)
             }
             SyncMessage::SnapshotDelta { snapshots } => {
+                let _execution = self.control.wait(self.file_system.execution.lock()).await?;
+                match self
+                    .control
+                    .admit(peer, RemoteOperation::ImportSnapshots)
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(Error::PermissionDenied) => return Ok(()),
+                    Err(error) => return Err(error),
+                }
                 self.file_system
                     .database
                     .import_snapshots(snapshots)
@@ -253,6 +297,26 @@ where
         response: crate::SessionResponse<PeerId>,
     ) -> Result<(), Error> {
         let result: Result<Vec<FileResponse<PeerId>>, Error> = async {
+            let _execution = self.control.wait(self.file_system.execution.lock()).await?;
+            let path = match &operation {
+                FileOperation::Open(request) => Some(request.path.clone()),
+                FileOperation::Read { handle, .. }
+                | FileOperation::Write { handle, .. }
+                | FileOperation::Scan { handle, .. }
+                | FileOperation::Close { handle } => self
+                    .handles
+                    .get(&(peer.clone(), handle.clone()))
+                    .map(|state| state.path.clone()),
+            };
+            self.control
+                .admit(
+                    peer.clone(),
+                    RemoteOperation::Session {
+                        operation: operation.clone(),
+                        path,
+                    },
+                )
+                .await?;
             match operation {
                 FileOperation::Open(request) => {
                     let entry = self.file_system.entry(&request.path).await?;
@@ -309,7 +373,10 @@ where
                     if state.revision != expected_revision {
                         Err(Error::StaleRevision)
                     } else {
-                        let count = state.handle.write(offset, data).await?;
+                        let count = self
+                            .file_system
+                            .write_at_inner(&state.path, expected_revision, offset, data)
+                            .await?;
                         state.revision = self.file_system.revision(&state.path).await?;
                         Ok(vec![FileResponse::Written {
                             count,
@@ -341,11 +408,20 @@ where
             }
         }
         .await;
+        if self.control.is_cancelled() {
+            self.handles.clear();
+        }
         let responses = result
             .map_err(service_error)
             .unwrap_or_else(|error| vec![FileResponse::Error(error)]);
         for item in responses {
-            let _ = response.send(item).await;
+            if let Err(tokio::sync::mpsc::error::TrySendError::Full(item)) = response.try_send(item)
+            {
+                let _ = self.control.wait(response.send(item)).await;
+            }
+        }
+        if self.control.is_cancelled() {
+            self.handles.clear();
         }
         Ok(())
     }
@@ -370,6 +446,7 @@ fn service_error(error: Error) -> FileServiceError {
         Error::StaleRevision => FileServiceError::StaleRevision,
         Error::PassthroughWrite => FileServiceError::PassthroughWrite,
         Error::ContentUnavailable => FileServiceError::ContentUnavailable,
+        Error::PermissionDenied | Error::Cancelled => FileServiceError::PermissionDenied,
         _ => FileServiceError::Io,
     }
 }

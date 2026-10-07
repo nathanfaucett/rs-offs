@@ -7,6 +7,7 @@ mod file_system;
 #[cfg(feature = "iroh")]
 mod iroh_transport;
 mod memory_transport;
+mod operation;
 mod path;
 mod protocol;
 mod residency;
@@ -28,6 +29,7 @@ pub use iroh_transport::{
     FILESYSTEM_STREAM_KIND, IrohFileHandle, IrohFileTransport, IrohResourceDescriptor,
 };
 pub use memory_transport::{MemoryNetwork, MemoryTransport, MemoryTransportError};
+pub use operation::{OperationControl, RemoteOperation};
 pub use protocol::{
     FILESYSTEM_SYNC_PROTOCOL_VERSION, MAX_FILESYSTEM_SYNC_FRAME_SIZE, decode_sync_message,
     encode_sync_message,

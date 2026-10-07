@@ -17,6 +17,8 @@ pub enum Error {
     ContentUnavailable,
     PassthroughWrite,
     Offline,
+    PermissionDenied,
+    Cancelled,
     NoPeers,
     NoReachableProvider,
     UnsupportedSyncProtocolVersion(u8),
@@ -46,6 +48,8 @@ impl fmt::Display for Error {
             Self::ContentUnavailable => formatter.write_str("content is unavailable"),
             Self::PassthroughWrite => formatter.write_str("writes require full residency"),
             Self::Offline => formatter.write_str("storage is offline"),
+            Self::PermissionDenied => formatter.write_str("operation denied by local policy"),
+            Self::Cancelled => formatter.write_str("sync execution cancelled"),
             Self::NoPeers => formatter.write_str("no peers are online"),
             Self::NoReachableProvider => {
                 formatter.write_str("no reachable provider advertises the content")
