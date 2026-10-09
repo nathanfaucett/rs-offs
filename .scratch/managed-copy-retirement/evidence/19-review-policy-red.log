@@ -1,0 +1,20 @@
+   Compiling file-system v0.1.0 (/home/nathan/code/rust/aicacia/offs/target/managed-retirement-worktree/crates/file-system)
+    Finished `test` profile [optimized + debuginfo] target(s) in 5.03s
+     Running tests/outbound.rs (target/independent-retirement-review/debug/deps/outbound-d5411cac0e151811)
+
+running 1 test
+
+thread 'retirement_denies_pending_outbound_policy_instead_of_reporting_success' (30973) panicked at crates/file-system/tests/outbound.rs:400:5:
+assertion failed: matches!(pending.as_mut().poll(&mut context),
+    Poll::Ready(Err(Error::PermissionDenied)))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test retirement_denies_pending_outbound_policy_instead_of_reporting_success ... FAILED
+
+failures:
+
+failures:
+    retirement_denies_pending_outbound_policy_instead_of_reporting_success
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `-p file-system --test outbound`

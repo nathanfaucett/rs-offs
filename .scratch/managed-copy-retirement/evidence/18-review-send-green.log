@@ -1,0 +1,9 @@
+   Compiling file-system v0.1.0 (/home/nathan/code/rust/aicacia/offs/target/managed-retirement-worktree/crates/file-system)
+    Finished `test` profile [optimized + debuginfo] target(s) in 10.74s
+     Running tests/outbound.rs (target/independent-retirement-review/debug/deps/outbound-d5411cac0e151811)
+
+running 1 test
+test retirement_releases_polled_pending_outbound_sends ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.60s
+

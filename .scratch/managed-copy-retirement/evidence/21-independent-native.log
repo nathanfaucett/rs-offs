@@ -1,0 +1,65 @@
+   Compiling file-system v0.1.0 (/home/nathan/code/rust/aicacia/offs/target/managed-retirement-worktree/crates/file-system)
+    Finished `test` profile [optimized + debuginfo] target(s) in 8.07s
+     Running tests/outbound.rs (target/independent-retirement-review/debug/deps/outbound-d5411cac0e151811)
+
+running 4 tests
+test initial_and_changed_snapshots_are_authorized_per_destination ... ok
+test retirement_denies_pending_outbound_policy_instead_of_reporting_success ... ok
+test cancellation_releases_polled_pending_outbound_sends ... ok
+test retirement_releases_polled_pending_outbound_sends ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+     Running tests/resource.rs (target/independent-retirement-review/debug/deps/resource-f0bef41831c44795)
+
+running 5 tests
+test filesystem_id_is_uuid_v7_backed_and_parsed_ids_are_checked ... ok
+test imported_tombstone_wins_over_a_live_catalog_entry ... ok
+test deselecting_projected_resource_evicts_only_local_copy_without_tombstone ... ok
+test resources_have_distinct_roots_duplicate_names_and_persist ... ok
+test deletion_is_a_durable_tombstone_exported_in_snapshot ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/retirement.rs (target/independent-retirement-review/debug/deps/retirement-a43b622a8c73e459)
+
+running 7 tests
+test retirement_wakes_idle_sync_run_and_preserves_target_tombstone ... ok
+test projected_eviction_revokes_retained_native_handles ... ok
+test passthrough_denies_delete_and_rename_including_descendants_and_destinations ... ok
+test retirement_cancels_pending_sync_admission_and_invalidates_live_sessions ... ok
+test native_process_lease_blocks_cleanup_until_owner_releases ... ok
+test retirement_cancels_unpublished_content_stage_without_touching_provider ... ok
+test created_copy_cleanup_failure_retries_after_native_reopen_without_catalog_mutation ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+
+   Compiling file-system v0.1.0 (/home/nathan/code/rust/aicacia/offs/target/managed-retirement-worktree/crates/file-system)
+    Finished `test` profile [optimized + debuginfo] target(s) in 10.01s
+     Running unittests src/lib.rs (target/independent-retirement-review/debug/deps/file_system-4161be2eef9f3213)
+
+running 2 tests
+test file_system_tests::retirement_allows_admitted_session_write_to_finish_and_revokes_cloned_owner ... ok
+test file_system_tests::retirement_drains_admitted_native_write_and_cancelled_drain_retries ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.23s
+
+   Compiling file-system v0.1.0 (/home/nathan/code/rust/aicacia/offs/target/managed-retirement-worktree/crates/file-system)
+    Finished `test` profile [optimized + debuginfo] target(s) in 10.71s
+     Running tests/file_system.rs (target/independent-retirement-review/debug/deps/file_system-e38c34cd2c6a6bcb)
+
+running 2 tests
+test residency_defaults_to_passthrough_and_uses_longest_prefix ... ok
+test passthrough_fetch_materializes_before_full_residency ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.05s
+
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.06s
+     Running tests/file_system.rs (target/independent-retirement-review/debug/deps/file_system-e38c34cd2c6a6bcb)
+
+running 2 tests
+test renames_directories_without_changing_identities ... ok
+test preserves_file_identity_across_overwrite_append_and_rename ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.05s
+

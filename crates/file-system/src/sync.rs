@@ -261,11 +261,13 @@ where
             .await
         {
             Ok(()) => {}
-            Err(Error::PermissionDenied) => return Ok(()),
+            Err(Error::PermissionDenied) => {
+                self.file_system.owner.check()?;
+                return Ok(());
+            }
             Err(error) => return Err(error),
         }
-        self.control
-            .wait(self.transport.send(peer, message))
+        self.wait(self.transport.send(peer, message))
             .await?
             .map_err(transport_error)
     }

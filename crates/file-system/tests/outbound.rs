@@ -268,3 +268,143 @@ async fn cancellation_releases_polled_pending_outbound_sends() {
         fs::remove_dir_all(root).expect("cleanup");
     }
 }
+
+#[tokio::test]
+async fn retirement_releases_polled_pending_outbound_sends() {
+    for path in [
+        OutboundPath::AnnounceRequest,
+        OutboundPath::AnnounceDelta,
+        OutboundPath::Changes,
+        OutboundPath::Reply,
+        OutboundPath::RunStartup,
+    ] {
+        let root = std::env::temp_dir().join(format!("offs-outbound-{}", Uuid::now_v7()));
+        let catalog = file_system::FileSystemCatalog::open(&root).expect("catalog opens");
+        let resource = catalog.create(None).expect("resource");
+        let files = catalog
+            .open_filesystem(resource.id, 1_u8)
+            .expect("filesystem opens");
+        files
+            .set_residency("", Residency::Full)
+            .await
+            .expect("full residency");
+        files
+            .write("retained", b"earlier committed content")
+            .await
+            .expect("earlier commit");
+        let network = MemoryNetwork::new(32);
+        let exchange = PendingExchange {
+            inner: network.transport(1),
+            block: Arc::new(AtomicU8::new(0)),
+            started: Arc::new(AtomicBool::new(false)),
+            dropped: Arc::new(AtomicBool::new(false)),
+        };
+        let peer = network.transport(2);
+        let _messages = peer.subscribe();
+        let control = OperationControl::default();
+        let mut sync = files
+            .metadata_sync(exchange.clone())
+            .with_operation_control(control.clone());
+        sync.pump().await.expect("baseline publication completes");
+        match path {
+            OutboundPath::AnnounceRequest | OutboundPath::RunStartup => {
+                exchange.block.store(1, Ordering::SeqCst)
+            }
+            _ => exchange.block.store(2, Ordering::SeqCst),
+        }
+        if matches!(path, OutboundPath::Changes) {
+            files
+                .write("later", b"later local change")
+                .await
+                .expect("change commits");
+        }
+        if matches!(path, OutboundPath::Reply) {
+            peer.send(1, SyncMessage::SnapshotRequest { peer: 2 })
+                .await
+                .expect("request queues");
+        }
+        let mut pending: Pin<Box<dyn Future<Output = Result<(), Error>> + '_>> = match path {
+            OutboundPath::AnnounceRequest | OutboundPath::AnnounceDelta => {
+                Box::pin(sync.announce())
+            }
+            OutboundPath::Changes | OutboundPath::Reply => Box::pin(sync.pump()),
+            OutboundPath::RunStartup => Box::pin(sync.run()),
+        };
+        std::future::poll_fn(|cx| {
+            assert!(
+                pending.as_mut().poll(cx).is_pending(),
+                "{path:?}: send must be pending"
+            );
+            Poll::Ready(())
+        })
+        .await;
+        assert!(
+            exchange.started.load(Ordering::SeqCst),
+            "{path:?}: send was actually polled"
+        );
+        assert!(!exchange.dropped.load(Ordering::SeqCst));
+        catalog
+            .remove_managed_copy(resource.id)
+            .await
+            .expect("retirement completes");
+        let result = std::future::poll_fn(|cx| match pending.as_mut().poll(cx) {
+            Poll::Ready(result) => Poll::Ready(result),
+            Poll::Pending => {
+                panic!("{path:?}: retirement must release the pending outbound send")
+            }
+        })
+        .await;
+        assert!(matches!(result, Err(Error::PermissionDenied)), "{path:?}");
+        assert!(
+            exchange.dropped.load(Ordering::SeqCst),
+            "{path:?}: pending send resources released"
+        );
+        drop(pending);
+        assert!(matches!(
+            files.read("retained").await,
+            Err(Error::PermissionDenied)
+        ));
+        assert!(
+            !root
+                .join("filesystems")
+                .join(resource.id.as_uuid().to_string())
+                .exists()
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+}
+
+#[tokio::test]
+async fn retirement_denies_pending_outbound_policy_instead_of_reporting_success() {
+    let root = std::env::temp_dir().join(format!("offs-outbound-policy-{}", Uuid::now_v7()));
+    let catalog = file_system::FileSystemCatalog::open(&root).expect("catalog");
+    let resource = catalog.create(None).expect("resource");
+    let files = catalog
+        .open_filesystem(resource.id, 1_u8)
+        .expect("filesystem");
+    let network = MemoryNetwork::new(32);
+    let transport = network.transport(1);
+    let peer = network.transport(2);
+    let mut messages = peer.subscribe();
+    let control = OperationControl::new(|_, _| Box::pin(std::future::pending()));
+    let sync = files
+        .metadata_sync(transport)
+        .with_operation_control(control);
+    let mut pending = Box::pin(sync.announce());
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(pending.as_mut().poll(&mut context).is_pending());
+    catalog
+        .remove_managed_copy(resource.id)
+        .await
+        .expect("retire");
+    assert!(matches!(
+        pending.as_mut().poll(&mut context),
+        Poll::Ready(Err(Error::PermissionDenied))
+    ));
+    assert!(take_messages(&mut messages).is_empty());
+    drop(pending);
+    drop(sync);
+    drop(files);
+    drop(catalog);
+    fs::remove_dir_all(root).expect("cleanup");
+}
