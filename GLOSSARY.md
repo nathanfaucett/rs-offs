@@ -2,24 +2,28 @@
 
 ## KV Store
 
-`kv` stores opaque byte values under UTF-8 keys. Each key has UUIDv7 generations and an Automerge-backed history. Deletes are retained as tombstones. Snapshot exchange is explicit; transport and peer state belong to the caller. Same-generation divergent histories are rejected rather than resolved with LWW.
+A KV Store holds values identified by keys, with retained generations and deletion tombstones. Reconciliation combines histories within a generation and selects the winning generation for each key.
 
 ## File System
 
-The File System is a local-first replicated storage engine. It exposes open/read/write/scan operations, stores content under a stable file id, and stores path metadata in `kv`. Metadata synchronization exchanges complete winning-key snapshots, including tombstones. Missing content is fetched through a separate file service.
+A File System is offline-first replicated storage of paths, file metadata, and content. Filesystem reconciliation brings replicas together while retaining stable file identities, deletion tombstones, and device-local residency choices.
 
 ## File Entry
 
-A File Entry is the metadata for one path: stable file id, kind, providers, locality, mode, owner, group, and content revision. The file id survives overwrite and rename; the path is the KV key. Deletes are KV tombstones rather than a field in `FileMeta`.
+A File Entry is the metadata for one path: stable file id, kind, providers, locality, mode, owner, group, and content revision. Its file id survives overwrite and rename; a deleted path is represented by a tombstone.
 
 ## Content Revision
 
-A Content Revision is a persisted UUIDv7 in `FileMeta`. It changes on each metadata/content write, is independent of the KV generation, and is used for stale-write checks and content requests.
+A Content Revision identifies a file's metadata/content version, independently of its metadata generation. It distinguishes the version requested or edited from stale versions.
 
 ## Residency
 
-Residency is a device-local choice per path: Full or Passthrough. Full stores metadata and content locally. Passthrough stores metadata only and obtains content from an online Full peer; it is read-only. The most-specific rule applies. Residency is never synchronized.
+Residency is a device-local choice per path: Full retains metadata and content, while read-only Passthrough retains metadata and obtains content from an available Full peer. The most-specific choice applies, and residency is not replicated.
 
 ## Transport
 
-A Transport provides typed send, broadcast, and subscribe operations for metadata snapshots and file sessions. It is abstracted so network implementations can be swapped; an in-memory transport exists for tests. Metadata snapshots are exchanged on connection/reconnection and after local committed changes. Lagged messages trigger a full exchange.
+A Transport is the caller-supplied exchange of filesystem metadata and file-session requests between peers, not filesystem persistence or reconciliation. A File Session is a peer-scoped exchange for opening, reading, writing, scanning, and closing a file handle.
+
+## File System Resource
+
+A File System Resource is a named or unnamed filesystem with a stable identity. Resource deletion is a replicated tombstone; device deselection removes only that device's projected local copy.
