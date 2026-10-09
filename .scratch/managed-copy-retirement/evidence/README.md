@@ -33,3 +33,7 @@ Every Cargo command above used `CARGO_TARGET_DIR=target/owner-retirement`. Comma
 See [managed-copy retirement](../../../docs/managed-copy-retirement.md). `remove_managed_copy` is async, local-only, idempotent, and available for created/projected/tombstoned identities. `evict_projected_copy` is now async and delegates to the same owner path. Retirement gates remain durable and one-way; no same-ID reactivation API is promised. Close is allowed as release; previously returned bytes cannot be recalled. Residency remains process-local, with Passthrough on reopen. Foreign native ownership returns IO WouldBlock until released, not physical-removal success. Native Linux behavior is qualified; no cross-platform filesystem-durability, hostile-directory, unmanaged raw-handle, transport-teardown, or content-plus-metadata crash-atomicity guarantee is claimed.
 
 Status remains claimed. Commit is for independent parent review only; do not integrate before that review.
+
+## Independent recovery review
+
+Original candidate c7bafda reviewed; c1d61d0 fixes two reproduced outbound retirement gaps. Review RED logs 17 and 19; GREEN logs 18 and 20; focused native qualification 21 (22 passing tests); focused warning-denied Clippy 22. Review commands use only `CARGO_TARGET_DIR=target/independent-retirement-review`. The original build target above was not cleaned or reused. Independent review now resolves the owner ticket; historical claimed statements above describe pre-review status. See [resolved ticket](../issues/01-owner-retirement.md) and [map](../map.md).
