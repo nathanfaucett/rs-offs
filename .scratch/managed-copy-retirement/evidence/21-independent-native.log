@@ -62,4 +62,3 @@ test renames_directories_without_changing_identities ... ok
 test preserves_file_identity_across_overwrite_append_and_rename ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.05s
-

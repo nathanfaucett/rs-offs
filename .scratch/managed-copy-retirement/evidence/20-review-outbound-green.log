@@ -9,4 +9,3 @@ test cancellation_releases_polled_pending_outbound_sends ... ok
 test retirement_releases_polled_pending_outbound_sends ... ok
 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
-
