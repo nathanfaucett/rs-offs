@@ -137,6 +137,7 @@ async fn deselecting_projected_resource_evicts_only_local_copy_without_tombstone
     assert!(
         catalog
             .evict_projected_copy(resource.id)
+            .await
             .expect("evict copy")
     );
     assert!(!local_root.exists());

@@ -255,7 +255,7 @@ async fn cancellation_while_queued_for_execution_never_reaches_policy_or_mutatio
         )
         .await
         .expect("open queues");
-    let execution = filesystem.execution.lock().await;
+    let execution = filesystem.owner.execution.lock().await;
     let mut queued = Box::pin(server.pump());
     std::future::poll_fn(|cx| {
         assert!(queued.as_mut().poll(cx).is_pending());
@@ -372,4 +372,189 @@ async fn fetch_write_sync_and_publish_faults_keep_metadata_and_earlier_files() {
         fs::remove_dir_all(source_root).expect("source cleanup");
         fs::remove_dir_all(target_root).expect("target cleanup");
     }
+}
+
+#[tokio::test]
+async fn retirement_drains_admitted_native_write_and_cancelled_drain_retries() {
+    for projected in [false, true] {
+        for cancel in [false, true] {
+            let root = root();
+            let catalog =
+                std::sync::Arc::new(crate::FileSystemCatalog::open(&root).expect("catalog"));
+            let resource = catalog.create(None).expect("resource");
+            if projected {
+                catalog.mark_projected(resource.id).expect("projection");
+            }
+            let before = catalog.snapshot().expect("catalog snapshot");
+            let filesystem = catalog
+                .open_filesystem(resource.id, 1_u8)
+                .expect("native copy");
+            filesystem
+                .set_residency("", Residency::Full)
+                .await
+                .expect("full");
+            let retiring_catalog = std::sync::Arc::clone(&catalog);
+            let retirement =
+                std::sync::Arc::new(std::sync::Mutex::new(Some(Box::pin(async move {
+                    retiring_catalog.remove_managed_copy(resource.id).await
+                }))));
+            let pending = std::sync::Arc::clone(&retirement);
+            *filesystem.content_action.lock().expect("action lock") = Some((
+                ContentStep::Metadata,
+                Box::new(move || {
+                    let mut pending = pending.lock().expect("retirement future");
+                    let future = pending.as_mut().expect("unpolled retirement");
+                    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+                    assert!(
+                        future.as_mut().poll(&mut context).is_pending(),
+                        "retirement must drain the admitted write"
+                    );
+                    if cancel {
+                        pending.take();
+                    }
+                }),
+            ));
+            let written = filesystem
+                .write("file", b"admitted write finishes")
+                .await
+                .expect("admitted write commits through retirement gate");
+            assert!(matches!(
+                filesystem.read("file").await,
+                Err(Error::PermissionDenied)
+            ));
+            let local_root = root
+                .join("filesystems")
+                .join(resource.id.as_uuid().to_string());
+            assert_eq!(
+                fs::read(
+                    local_root
+                        .join(".data")
+                        .join(written.meta.file_id.to_string())
+                        .join(written.meta.revision.to_string())
+                )
+                .expect("admitted content committed"),
+                b"admitted write finishes"
+            );
+            let future = retirement.lock().expect("retirement future").take();
+            if let Some(future) = future {
+                future.await.expect("drain completes");
+            } else {
+                assert!(
+                    local_root.exists(),
+                    "cancelled drain does not claim physical completion"
+                );
+                catalog
+                    .remove_managed_copy(resource.id)
+                    .await
+                    .expect("retry cancelled drain");
+            }
+            assert!(!local_root.exists());
+            assert_eq!(catalog.snapshot().expect("catalog intact"), before);
+            assert!(matches!(
+                catalog.open_filesystem(resource.id, 1_u8),
+                Err(Error::PermissionDenied)
+            ));
+            drop(filesystem);
+            drop(catalog);
+            let reopened = crate::FileSystemCatalog::open(&root).expect("restart");
+            assert!(matches!(
+                reopened.open_filesystem(resource.id, 1_u8),
+                Err(Error::PermissionDenied)
+            ));
+            reopened
+                .remove_managed_copy(resource.id)
+                .await
+                .expect("restart retry");
+            drop(reopened);
+            fs::remove_dir_all(root).expect("cleanup");
+        }
+    }
+}
+
+#[tokio::test]
+async fn retirement_allows_admitted_session_write_to_finish_and_revokes_cloned_owner() {
+    let root = root();
+    let catalog = std::sync::Arc::new(crate::FileSystemCatalog::open(&root).expect("catalog"));
+    let resource = catalog.create(None).expect("resource");
+    let filesystem = std::sync::Arc::new(
+        catalog
+            .open_filesystem(resource.id, 1_u8)
+            .expect("native copy"),
+    );
+    let cloned = std::sync::Arc::clone(&filesystem);
+    filesystem
+        .set_residency("", Residency::Full)
+        .await
+        .expect("full");
+    let initial = filesystem
+        .write("file", b"original")
+        .await
+        .expect("initial content");
+    let network = MemoryNetwork::new(32);
+    let transport = network.transport(2);
+    let mut server = cloned.metadata_sync(network.transport(1));
+    let mut handle = transport
+        .open(
+            1,
+            OpenRequest {
+                path: "file".into(),
+                revision: Some(initial.meta.revision),
+            },
+        )
+        .await
+        .expect("remote open");
+    server.pump().await.expect("session opened");
+    let retiring_catalog = std::sync::Arc::clone(&catalog);
+    let retirement = std::sync::Arc::new(std::sync::Mutex::new(Some(Box::pin(async move {
+        retiring_catalog.remove_managed_copy(resource.id).await
+    }))));
+    let pending = std::sync::Arc::clone(&retirement);
+    *filesystem.content_action.lock().expect("action lock") = Some((
+        ContentStep::Publish,
+        Box::new(move || {
+            let mut pending = pending.lock().expect("retirement future");
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(
+                pending
+                    .as_mut()
+                    .expect("retirement")
+                    .as_mut()
+                    .poll(&mut context)
+                    .is_pending()
+            );
+        }),
+    ));
+    assert_eq!(
+        drive(handle.write(0, Bytes::from_static(b"new")), &mut server)
+            .await
+            .expect("admitted session commits and responds"),
+        3
+    );
+    assert!(matches!(
+        filesystem.read("file").await,
+        Err(Error::PermissionDenied)
+    ));
+    let retirement = retirement
+        .lock()
+        .expect("retirement future")
+        .take()
+        .expect("pending drain");
+    retirement.await.expect("native drain completes");
+    assert!(
+        !root
+            .join("filesystems")
+            .join(resource.id.as_uuid().to_string())
+            .exists()
+    );
+    let read = handle.read(0, 3);
+    assert!(matches!(server.pump().await, Err(Error::PermissionDenied)));
+    assert!(matches!(
+        read.await,
+        Err(crate::MemoryTransportError::SessionClosed)
+    ));
+    drop(server);
+    drop(cloned);
+    drop(filesystem);
+    drop(catalog);
+    fs::remove_dir_all(root).expect("cleanup");
 }

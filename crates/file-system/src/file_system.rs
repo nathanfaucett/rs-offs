@@ -3,7 +3,7 @@ use std::{
     fs::{self, File},
     io::{Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 use bytes::Bytes;
@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::{
     Error, FileKind, FileMeta, OperationControl, ReadStream, RemoteOperation, Residency,
     file_service::{ScanPage, scan_page},
+    managed_copy::{ManagedCopy, NativeCopy},
     path::{directory, file},
     residency::ResidencyRules,
     staged_content::StagedContent,
@@ -33,13 +34,10 @@ pub struct FileSystem<PeerId = Uuid>
 where
     PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + 'static,
 {
-    content_root: PathBuf,
-    pub(crate) database: Database,
-    pub(crate) metadata: Client,
+    pub(crate) owner: Arc<ManagedCopy>,
     node_id: PeerId,
     residency: Mutex<ResidencyRules>,
     pub(crate) changes: broadcast::Sender<()>,
-    pub(crate) execution: tokio::sync::Mutex<()>,
     #[cfg(test)]
     pub(crate) content_fault: Mutex<Option<crate::staged_content::ContentStep>>,
     #[cfg(test)]
@@ -51,23 +49,14 @@ where
     PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     pub fn open(root: impl AsRef<Path>, node_id: PeerId) -> Result<Self, Error> {
-        let root = root.as_ref();
-        fs::create_dir_all(root)?;
-        let content_root = root.join(".data");
-        fs::create_dir_all(&content_root)?;
-        let database = Database::open_with_table(root.join("metadata.redb"), "metadata")
-            .map_err(metadata_error)?;
-        let metadata = database.client();
+        let owner = ManagedCopy::open(root.as_ref())?;
         let changes = broadcast::channel(16).0;
 
         Ok(Self {
-            content_root,
-            database,
-            metadata,
+            owner,
             node_id,
             residency: Mutex::new(ResidencyRules::default()),
             changes,
-            execution: tokio::sync::Mutex::new(()),
             #[cfg(test)]
             content_fault: Mutex::new(None),
             #[cfg(test)]
@@ -76,14 +65,158 @@ where
     }
 
     pub fn residency(&self, path: &str) -> Result<Residency, Error> {
+        self.owner.check()?;
         self.residency
             .lock()
             .expect("residency lock poisoned")
             .get(path)
     }
 
+    pub(crate) async fn store_content<S>(
+        &self,
+        file_id: Uuid,
+        revision: Uuid,
+        stream: S,
+        control: &OperationControl<PeerId>,
+        peer: PeerId,
+    ) -> Result<(), Error>
+    where
+        S: futures_core::Stream<Item = Result<Bytes, Error>>,
+    {
+        self.access()
+            .await?
+            .store_content(file_id, revision, stream, control, peer)
+            .await
+    }
+
+    pub(crate) async fn access(&self) -> Result<FileSystemAccess<'_, PeerId>, Error> {
+        Ok(FileSystemAccess {
+            file_system: self,
+            native: self.owner.admit().await?,
+        })
+    }
     pub async fn set_residency(&self, path: &str, residency: Residency) -> Result<(), Error> {
-        let _execution = self.execution.lock().await;
+        self.access().await?.set_residency(path, residency).await
+    }
+
+    pub async fn open_handle(
+        &self,
+        request: crate::OpenRequest,
+    ) -> Result<crate::LocalFileHandle<'_, PeerId>, Error> {
+        self.access().await?.open_handle(request).await
+    }
+
+    pub async fn entry(&self, path: &str) -> Result<Entry<PeerId>, Error> {
+        self.access().await?.entry(path).await
+    }
+
+    pub async fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
+        self.access().await?.read(path).await
+    }
+
+    pub async fn stream(&self, path: &str, chunk_size: usize) -> Result<ReadStream, Error> {
+        self.access().await?.stream(path, chunk_size).await
+    }
+
+    pub async fn write(&self, path: &str, content: &[u8]) -> Result<Entry<PeerId>, Error> {
+        self.access().await?.write(path, content).await
+    }
+
+    pub async fn write_at(
+        &self,
+        path: &str,
+        expected_revision: Uuid,
+        offset: u64,
+        data: Bytes,
+    ) -> Result<u32, Error> {
+        self.access()
+            .await?
+            .write_at(path, expected_revision, offset, data)
+            .await
+    }
+
+    pub async fn append(&self, path: &str, content: &[u8]) -> Result<(), Error> {
+        self.access().await?.append(path, content).await
+    }
+
+    pub async fn create_dir(&self, path: &str) -> Result<Entry<PeerId>, Error> {
+        self.access().await?.create_dir(path).await
+    }
+
+    pub async fn list(&self, path: &str) -> Result<Vec<Entry<PeerId>>, Error> {
+        self.access().await?.list(path).await
+    }
+
+    pub async fn scan(
+        &self,
+        path: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<ScanPage<PeerId>, Error> {
+        self.access().await?.scan(path, cursor, limit).await
+    }
+
+    pub async fn delete(&self, path: &str) -> Result<(), Error> {
+        self.access().await?.delete(path).await
+    }
+
+    pub async fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
+        self.access().await?.rename(from, to).await
+    }
+
+    pub async fn revision(&self, path: &str) -> Result<Uuid, Error> {
+        self.access().await?.revision(path).await
+    }
+
+    pub(crate) async fn content(&self, file_id: Uuid, revision: Uuid) -> Result<Vec<u8>, Error> {
+        self.access().await?.content(file_id, revision).await
+    }
+}
+
+pub(crate) struct FileSystemAccess<'a, PeerId>
+where
+    PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + 'static,
+{
+    file_system: &'a FileSystem<PeerId>,
+    native: tokio::sync::RwLockReadGuard<'a, Option<NativeCopy>>,
+}
+
+impl<PeerId> core::ops::Deref for FileSystemAccess<'_, PeerId>
+where
+    PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + 'static,
+{
+    type Target = FileSystem<PeerId>;
+    fn deref(&self) -> &Self::Target {
+        self.file_system
+    }
+}
+
+impl<'a, PeerId> FileSystemAccess<'a, PeerId>
+where
+    PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + Send + Sync + 'static,
+{
+    pub(crate) fn database(&self) -> &Database {
+        &self.native.as_ref().expect("admitted native copy").database
+    }
+    fn metadata(&self) -> &Client {
+        &self.native.as_ref().expect("admitted native copy").metadata
+    }
+    fn content_root(&self) -> &PathBuf {
+        &self
+            .native
+            .as_ref()
+            .expect("admitted native copy")
+            .content_root
+    }
+    pub(crate) fn residency(&self, path: &str) -> Result<Residency, Error> {
+        self.file_system
+            .residency
+            .lock()
+            .expect("residency lock")
+            .get(path)
+    }
+    pub async fn set_residency(&self, path: &str, residency: Residency) -> Result<(), Error> {
+        let _execution = self.owner.execution.lock().await;
         directory(path)?;
         if residency == Residency::Full {
             self.verify_content(path).await?;
@@ -101,7 +234,7 @@ where
     pub async fn open_handle(
         &self,
         request: crate::OpenRequest,
-    ) -> Result<crate::LocalFileHandle<'_, PeerId>, Error> {
+    ) -> Result<crate::LocalFileHandle<'a, PeerId>, Error> {
         let entry = self.entry(&request.path).await?;
         let revision = self.revision(&request.path).await?;
         if request
@@ -111,7 +244,7 @@ where
             return Err(Error::StaleRevision);
         }
         Ok(crate::file_service::LocalFileHandle::new(
-            self,
+            self.file_system,
             request.path,
             revision,
             entry.meta.kind,
@@ -133,7 +266,7 @@ where
     }
 
     pub async fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
-        let _execution = self.execution.lock().await;
+        let _execution = self.owner.execution.lock().await;
         let entry = self.entry(path).await?;
         if entry.meta.kind == FileKind::Directory {
             return Err(Error::IsDirectory);
@@ -157,7 +290,7 @@ where
         expected_revision: Option<Uuid>,
         chunk_size: usize,
     ) -> Result<ReadStream, Error> {
-        let _execution = self.execution.lock().await;
+        let _execution = self.owner.execution.lock().await;
         let entry = self.entry(path).await?;
         if expected_revision.is_some_and(|revision| entry.meta.revision != revision) {
             return Err(Error::StaleRevision);
@@ -168,11 +301,12 @@ where
         ReadStream::new(
             File::open(self.content_path(entry.meta.file_id, entry.meta.revision))?,
             chunk_size,
+            Arc::clone(&self.owner),
         )
     }
 
     pub async fn write(&self, path: &str, content: &[u8]) -> Result<Entry<PeerId>, Error> {
-        let _execution = self.execution.lock().await;
+        let _execution = self.owner.execution.lock().await;
         file(path)?;
         self.require_full(path)?;
         self.ensure_parent_directories(path).await?;
@@ -201,7 +335,7 @@ where
         offset: u64,
         data: Bytes,
     ) -> Result<u32, Error> {
-        let _execution = self.execution.lock().await;
+        let _execution = self.owner.execution.lock().await;
         self.write_at_inner(path, expected_revision, offset, data)
             .await
     }
@@ -243,7 +377,7 @@ where
     }
 
     pub async fn append(&self, path: &str, content: &[u8]) -> Result<(), Error> {
-        let _execution = self.execution.lock().await;
+        let _execution = self.owner.execution.lock().await;
         file(path)?;
         self.require_full(path)?;
         let entry = self.entry(path).await?;
@@ -265,7 +399,7 @@ where
     }
 
     pub async fn create_dir(&self, path: &str) -> Result<Entry<PeerId>, Error> {
-        let _execution = self.execution.lock().await;
+        let _execution = self.owner.execution.lock().await;
         file(path)?;
         self.require_full(path)?;
         self.ensure_parent_directories(path).await?;
@@ -324,17 +458,20 @@ where
     }
 
     pub async fn delete(&self, path: &str) -> Result<(), Error> {
-        let _execution = self.execution.lock().await;
+        let _execution = self.owner.execution.lock().await;
+        self.require_full(path)?;
         let _ = self.entry(path).await?;
-        self.metadata.delete(path).await.map_err(metadata_error)?;
+        self.metadata().delete(path).await.map_err(metadata_error)?;
         let _ = self.changes.send(());
         Ok(())
     }
 
     pub async fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
-        let _execution = self.execution.lock().await;
+        let _execution = self.owner.execution.lock().await;
         file(from)?;
         file(to)?;
+        self.require_full(from)?;
+        self.require_full(to)?;
         let entry = self.entry(from).await?;
         if self.get(to).await?.is_some() {
             return Err(Error::AlreadyExists);
@@ -342,7 +479,6 @@ where
         if entry.meta.kind == FileKind::Directory && to.starts_with(&format!("{from}/")) {
             return Err(Error::InvalidPath);
         }
-        self.ensure_parent_directories(to).await?;
         let mut moves = vec![(from.to_owned(), to.to_owned(), entry.meta)];
         if moves[0].2.kind == FileKind::Directory {
             let prefix = format!("{from}/");
@@ -352,12 +488,19 @@ where
                 }
             }
         }
-        for (_, destination, _) in &moves {
+        for (source, destination, _) in &moves {
+            self.require_full(source)?;
+            self.require_full(destination)?;
             if destination != to && self.get(destination).await?.is_some() {
                 return Err(Error::AlreadyExists);
             }
         }
-        let mut transaction = self.metadata.transaction().await.map_err(metadata_error)?;
+        self.ensure_parent_directories(to).await?;
+        let mut transaction = self
+            .metadata()
+            .transaction()
+            .await
+            .map_err(metadata_error)?;
         let mut prepared = Vec::new();
         for (_, destination, meta) in &moves {
             let previous = self.content_path(meta.file_id, meta.revision);
@@ -423,7 +566,7 @@ where
                 });
                 if !retained
                     && let Err(error) =
-                        fs::remove_dir_all(self.content_root.join(file_id.to_string()))
+                        fs::remove_dir_all(self.content_root().join(file_id.to_string()))
                     && error.kind() != std::io::ErrorKind::NotFound
                 {
                     return Err(error.into());
@@ -457,7 +600,7 @@ where
     }
 
     fn content_path(&self, file_id: Uuid, revision: Uuid) -> PathBuf {
-        self.content_root
+        self.content_root()
             .join(file_id.to_string())
             .join(revision.to_string())
     }
@@ -495,23 +638,31 @@ where
     where
         S: futures_core::Stream<Item = Result<Bytes, Error>>,
     {
-        if !control.wait(self.has_revision(file_id, revision)).await?? {
+        if !self
+            .owner
+            .wait(control.wait(self.has_revision(file_id, revision)))
+            .await???
+        {
             return Err(Error::StaleRevision);
         }
         let path = self.content_path(file_id, revision);
         let mut stage = StagedContent::new(path.clone())?;
         futures_util::pin_mut!(stream);
-        while let Some(chunk) = control.wait(stream.next()).await? {
+        while let Some(chunk) = self.owner.wait(control.wait(stream.next())).await?? {
             self.stage_write(&mut stage, &chunk?)?;
         }
         self.stage_sync(&stage)?;
-        let _execution = control.wait(self.execution.lock()).await?;
+        let _execution = self
+            .owner
+            .wait(control.wait(self.owner.execution.lock()))
+            .await??;
         if !self.has_revision(file_id, revision).await? {
             return Err(Error::StaleRevision);
         }
-        control
-            .admit(peer, RemoteOperation::PublishContent { file_id, revision })
-            .await?;
+        self.owner
+            .wait(control.admit(peer, RemoteOperation::PublishContent { file_id, revision }))
+            .await??;
+        self.owner.check()?;
         if !path.is_file() {
             self.stage_publish(&mut stage)?;
             stage.commit();
@@ -577,7 +728,7 @@ where
     }
 
     pub(crate) async fn get(&self, path: &str) -> Result<Option<FileMeta<PeerId>>, Error> {
-        self.metadata
+        self.metadata()
             .get(path)
             .await
             .map_err(metadata_error)?
@@ -591,7 +742,7 @@ where
     }
 
     async fn all_metadata(&self) -> Result<Vec<(String, FileMeta<PeerId>)>, Error> {
-        self.metadata
+        self.metadata()
             .scan_all()
             .await
             .map_err(metadata_error)?
@@ -610,7 +761,7 @@ where
     async fn put(&self, path: &str, meta: FileMeta<PeerId>) -> Result<(), Error> {
         #[cfg(test)]
         self.content_checkpoint(crate::staged_content::ContentStep::Metadata)?;
-        self.metadata
+        self.metadata()
             .set(
                 path,
                 Value::Json(JsonValue::from(

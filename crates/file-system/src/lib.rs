@@ -7,6 +7,7 @@ mod file_system;
 #[cfg(test)]
 mod file_system_tests;
 
+mod managed_copy;
 mod memory_transport;
 mod operation;
 mod path;

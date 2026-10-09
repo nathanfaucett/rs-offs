@@ -1,0 +1,25 @@
+   Compiling file-system v0.1.0 (/home/nathan/code/rust/aicacia/offs/target/managed-retirement-worktree/crates/file-system)
+warning: methods `stream_revision` and `get` are never used
+   --> crates/file-system/src/file_system.rs:109:25
+    |
+ 46 | / impl<PeerId> FileSystem<PeerId>
+ 47 | | where
+ 48 | |     PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + Send + Sync + 'static,
+    | |_______________________________________________________________________________________- methods in this implementation
+...
+109 |       pub(crate) async fn stream_revision(
+    |                           ^^^^^^^^^^^^^^^
+...
+169 |       pub(crate) async fn get(&self, path: &str) -> Result<Option<FileMeta<PeerId>>, Error> {
+    |                           ^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `file-system` (lib) generated 1 warning
+    Finished `test` profile [optimized + debuginfo] target(s) in 58.86s
+     Running tests/retirement.rs (target/owner-retirement/debug/deps/retirement-a43b622a8c73e459)
+
+running 1 test
+test projected_eviction_revokes_retained_native_handles ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s

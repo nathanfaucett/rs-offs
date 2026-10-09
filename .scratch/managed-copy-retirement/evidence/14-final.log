@@ -1,0 +1,48 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.17s
+     Running tests/resource.rs (target/owner-retirement/debug/deps/resource-f0bef41831c44795)
+
+running 5 tests
+test filesystem_id_is_uuid_v7_backed_and_parsed_ids_are_checked ... ok
+test imported_tombstone_wins_over_a_live_catalog_entry ... ok
+test deletion_is_a_durable_tombstone_exported_in_snapshot ... ok
+test resources_have_distinct_roots_duplicate_names_and_persist ... ok
+test deselecting_projected_resource_evicts_only_local_copy_without_tombstone ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running tests/retirement.rs (target/owner-retirement/debug/deps/retirement-a43b622a8c73e459)
+
+running 7 tests
+test retirement_wakes_idle_sync_run_and_preserves_target_tombstone ... ok
+test retirement_cancels_pending_sync_admission_and_invalidates_live_sessions ... ok
+test projected_eviction_revokes_retained_native_handles ... ok
+test native_process_lease_blocks_cleanup_until_owner_releases ... ok
+test passthrough_denies_delete_and_rename_including_descendants_and_destinations ... ok
+test retirement_cancels_unpublished_content_stage_without_touching_provider ... ok
+test created_copy_cleanup_failure_retries_after_native_reopen_without_catalog_mutation ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.23s
+     Running unittests src/lib.rs (target/owner-retirement/debug/deps/file_system-4161be2eef9f3213)
+
+running 14 tests
+test file_system_tests::a_closed_read_response_is_not_successful_transfer_completion ... ok
+test protocol::tests::rejects_invalid_and_unsupported_frames ... ok
+test protocol::tests::sync_message_round_trips_with_protocol_version ... ok
+test residency::tests::uses_the_longest_matching_path_rule ... ok
+test protocol::tests::rejects_oversized_frames_before_decoding ... ok
+test file_system_tests::cancellation_while_queued_for_execution_never_reaches_policy_or_mutation ... ok
+test sync::tests::rejects_oversized_file_read_before_allocating ... ok
+test file_system_tests::revision_bound_session_reads_reject_provider_changes_between_reads ... ok
+test sync::tests::file_handles_are_scoped_to_requesting_peer ... ok
+test file_system_tests::admitted_session_write_finishes_when_cancelled_at_native_publication ... ok
+test file_system_tests::retirement_allows_admitted_session_write_to_finish_and_revokes_cloned_owner ... ok
+test file_system_tests::fetch_write_sync_and_publish_faults_keep_metadata_and_earlier_files ... ok
+test file_system_tests::retirement_drains_admitted_native_write_and_cancelled_drain_retries ... ok
+test file_system_tests::write_offset_and_append_faults_preserve_content_revision_and_cleanup ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.49s

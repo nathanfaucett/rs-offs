@@ -118,6 +118,42 @@ where
         }
     }
 
+    pub(crate) async fn read_admitted(
+        &self,
+        access: &crate::file_system::FileSystemAccess<'_, PeerId>,
+        offset: u64,
+        length: u32,
+    ) -> Result<Bytes, Error>
+    where
+        PeerId: Send + Sync,
+    {
+        if self.kind == FileKind::Directory {
+            return Err(Error::IsDirectory);
+        }
+        let mut stream = access
+            .stream_revision(&self.path, Some(self.revision), 64 * 1024)
+            .await?;
+        stream.admitted = true;
+        let mut remaining = offset;
+        let mut output = BytesMut::with_capacity(length as usize);
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            if remaining >= chunk.len() as u64 {
+                remaining -= chunk.len() as u64;
+                continue;
+            }
+            let start = remaining as usize;
+            remaining = 0;
+            let available = &chunk[start..];
+            let take = available.len().min(length as usize - output.len());
+            output.extend_from_slice(&available[..take]);
+            if output.len() == length as usize {
+                break;
+            }
+        }
+        Ok(output.freeze())
+    }
+
     pub async fn close(self) -> Result<(), Error> {
         Ok(())
     }
@@ -162,44 +198,21 @@ where
 
     fn read<'a>(&'a mut self, offset: u64, length: u32) -> FileFuture<'a, Result<Bytes, Error>> {
         Box::pin(async move {
-            if self.kind == FileKind::Directory {
-                return Err(Error::IsDirectory);
-            }
-            let mut stream = self
-                .file_system
-                .stream_revision(&self.path, Some(self.revision), 64 * 1024)
-                .await?;
-            let mut remaining = offset;
-            let mut output = BytesMut::with_capacity(length as usize);
-            while let Some(chunk) = stream.next().await {
-                let chunk = chunk?;
-                if remaining >= chunk.len() as u64 {
-                    remaining -= chunk.len() as u64;
-                    continue;
-                }
-                let start = remaining as usize;
-                remaining = 0;
-                let available = &chunk[start..];
-                let take = available.len().min(length as usize - output.len());
-                output.extend_from_slice(&available[..take]);
-                if output.len() == length as usize {
-                    break;
-                }
-            }
-            Ok(output.freeze())
+            let access = self.file_system.access().await?;
+            self.read_admitted(&access, offset, length).await
         })
     }
 
     fn write<'a>(&'a mut self, offset: u64, data: Bytes) -> FileFuture<'a, Result<u32, Error>> {
         Box::pin(async move {
+            let access = self.file_system.access().await?;
             if self.kind == FileKind::Directory {
                 return Err(Error::IsDirectory);
             }
-            let written = self
-                .file_system
+            let written = access
                 .write_at(&self.path, self.revision, offset, data)
                 .await?;
-            self.revision = self.file_system.revision(&self.path).await?;
+            self.revision = access.revision(&self.path).await?;
             Ok(written)
         })
     }
@@ -210,12 +223,11 @@ where
         limit: u32,
     ) -> FileFuture<'a, Result<ScanPage<PeerId>, Error>> {
         Box::pin(async move {
+            let access = self.file_system.access().await?;
             if self.kind != FileKind::Directory {
                 return Err(Error::NotDirectory);
             }
-            self.file_system
-                .scan(&self.path, cursor.as_deref(), limit)
-                .await
+            access.scan(&self.path, cursor.as_deref(), limit).await
         })
     }
 

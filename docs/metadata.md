@@ -1,5 +1,7 @@
 # Metadata storage
 
+See [managed-copy retirement](managed-copy-retirement.md) for public local-only removal, handle invalidation, retry/restart, and the async projected eviction API.
+
 Each file-system root stores metadata in `metadata.redb`, managed by the public `ofdb-kv` facade in its `metadata` table. `FileSystem::open` uses `Database::open_with_table` so existing metadata remains in place.
 
 Filesystem exchange is caller-supplied through `Transport` and `FileSessionService`; this crate has no concrete Iroh adapter or `iroh` feature. Generic messages, versioned metadata codecs, sessions, persistence, reconciliation and memory exchange remain here. See [execution and adapter handoff](execution.md) for the current admission, immutable revision content, cleanup and consumer contracts. Domain resource descriptors, authenticated peer binding, RPC envelopes and network lifecycle belong to the consumer, not persistence.
@@ -22,7 +24,7 @@ Mesh message routing does not guarantee transparent multihop DB/FS streams or pr
 - `Database::import_snapshots` uses a transaction for the supplied snapshot set: a failed import rolls back that set. In the current sibling `ofdb` implementation, older generations are ignored, newer generations replace older ones, and same-generation divergent Automerge histories are merged. This corrects the previous glossary claim that divergence was rejected.
 - Paths are metadata keys; content is stored separately under stable file ids. Content revisions are UUIDv7 values separate from KV generations. Revision matching is not a freshness deadline.
 - Missing content is fetched from a reachable listed provider through revision-specific file sessions. `store_content` streams to a temporary file, synchronizes it, rechecks the revision, and renames it into place.
-- Full/Passthrough and longest-prefix residency remain device-local. Passthrough is read-only and requires an available Full provider for uncached content; becoming Full requires materialization.
+- Full/Passthrough and longest-prefix residency remain device-local and process-local per filesystem instance; reopen defaults to Passthrough. Passthrough is read-only and requires an available Full provider for uncached content; becoming Full requires materialization.
 - Catalog resource tombstones are distinct from path tombstones. Catalog import retains deletion; projected-copy eviction does not delete the resource for other replicas.
 
 These are specific filesystem semantics over a CRDT-backed KV dependency, not proof of a generic filesystem/content CRDT, byte-wise content merge, or a single atomic content-plus-metadata transaction.

@@ -1,5 +1,5 @@
 use std::{
-    fs, io,
+    fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -203,34 +203,35 @@ impl FileSystemCatalog {
             .collect()
     }
 
-    pub fn evict_projected_copy(&self, id: FileSystemId) -> Result<bool, Error> {
-        let transaction = self.database.begin_read().map_err(metadata_error)?;
-        let projected = transaction.open_table(PROJECTED).map_err(metadata_error)?;
-        let Some(selected) = projected
-            .get(id.0.as_bytes().as_slice())
-            .map_err(metadata_error)?
-        else {
-            return Ok(false);
-        };
-        if selected.value() == 0 {
-            return Ok(false);
+    /// Permanently retires this device's managed copy without changing catalog identity or tombstones.
+    /// Cancellation or failure leaves the durable gate closed; call again to finish cleanup.
+    pub async fn remove_managed_copy(&self, id: FileSystemId) -> Result<(), Error> {
+        if !self.snapshot()?.iter().any(|entry| entry.resource.id == id) {
+            return Err(Error::NotFound);
         }
-        drop(selected);
-        drop(projected);
-        drop(transaction);
-
-        match fs::remove_dir_all(self.root.join(id.0.to_string())) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
+        crate::managed_copy::ManagedCopy::remove(&self.root.join(id.0.to_string())).await?;
         let transaction = self.database.begin_write().map_err(metadata_error)?;
-        transaction
-            .open_table(PROJECTED)
-            .map_err(metadata_error)?
-            .insert(id.0.as_bytes().as_slice(), 0)
-            .map_err(metadata_error)?;
-        transaction.commit().map_err(metadata_error)?;
+        {
+            let mut projected = transaction.open_table(PROJECTED).map_err(metadata_error)?;
+            if projected
+                .get(id.0.as_bytes().as_slice())
+                .map_err(metadata_error)?
+                .is_some()
+            {
+                projected
+                    .insert(id.0.as_bytes().as_slice(), 0)
+                    .map_err(metadata_error)?;
+            }
+        }
+        transaction.commit().map_err(metadata_error)
+    }
+
+    /// Retires a selected projection using the same owner lifecycle as created copies.
+    pub async fn evict_projected_copy(&self, id: FileSystemId) -> Result<bool, Error> {
+        if !self.projected_selected()?.contains(&id) {
+            return Ok(false);
+        }
+        self.remove_managed_copy(id).await?;
         Ok(true)
     }
 

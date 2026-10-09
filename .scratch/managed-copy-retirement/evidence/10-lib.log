@@ -1,0 +1,20 @@
+   Compiling file-system v0.1.0 (/home/nathan/code/rust/aicacia/offs/target/managed-retirement-worktree/crates/file-system)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.63s
+     Running unittests src/lib.rs (target/owner-retirement/debug/deps/file_system-4161be2eef9f3213)
+
+running 13 tests
+test file_system_tests::a_closed_read_response_is_not_successful_transfer_completion ... ok
+test protocol::tests::rejects_invalid_and_unsupported_frames ... ok
+test protocol::tests::sync_message_round_trips_with_protocol_version ... ok
+test residency::tests::uses_the_longest_matching_path_rule ... ok
+test protocol::tests::rejects_oversized_frames_before_decoding ... ok
+test sync::tests::rejects_oversized_file_read_before_allocating ... ok
+test file_system_tests::cancellation_while_queued_for_execution_never_reaches_policy_or_mutation ... ok
+test sync::tests::file_handles_are_scoped_to_requesting_peer ... ok
+test file_system_tests::revision_bound_session_reads_reject_provider_changes_between_reads ... ok
+test file_system_tests::admitted_session_write_finishes_when_cancelled_at_native_publication ... ok
+test file_system_tests::fetch_write_sync_and_publish_faults_keep_metadata_and_earlier_files ... ok
+test file_system_tests::retirement_drains_admitted_native_write_and_cancelled_drain_retries ... ok
+test file_system_tests::write_offset_and_append_faults_preserve_content_revision_and_cleanup ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
