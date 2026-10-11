@@ -1,6 +1,7 @@
 # Managed-copy retirement owner follow-up
 
 Status: resolved
+Work status: complete; independently reviewed and integrated into local main
 Type: task
 Label: ready-for-agent
 
@@ -15,12 +16,11 @@ Public FileSystemCatalog, FileSystem, LocalFileHandle/FileHandle, ReadStream and
 
 High priority owner capability gap. Main risks: nested admission deadlocks, native-handle leaks, reopen race, cancelled cleanup, descendant residency in rename. Reuse one owner lifecycle and existing operation serialization; no dependency or consumer cleanup implementation.
 
-## Comments
+## Comments (historical; independent review below supersedes claimed status)
 
 Read original of audit and public-persistence document read-only. Referenced managed-copy-retirement heading is not present in current original public-persistence; explicit audit contract used. Original offs clean at requested base. Independent parent review required before integration; this ticket remains claimed.
 
-
-## Implementation / owner handoff
+## Implementation / owner handoff (pre-review checkpoint)
 
 Public `FileSystemCatalog::remove_managed_copy(id).await -> Result<(), Error>` retires created and projected copies. `evict_projected_copy(id).await -> Result<bool, Error>` is now async and shares this owner path. One fsynced durable sibling gate, shared native admission/drain slot, stream descriptor invalidation and OS-exclusive native lease implement cleanup without dropping catalog identity/Tombstones. Delete/rename enforce Full before mutation (all moved source/destination descendants for rename).
 
@@ -37,6 +37,7 @@ Reviewed c7bafda against original of owner-api-audit and public-persistence.md, 
 Two concrete outbound gaps reproduced RED: pending transport send survived retirement; pending export policy retirement was swallowed as successful export. Fixed on the existing owner branch in c1d61d0: owner-aware send wait and owner-error preservation, retaining ordinary peer-policy skip behavior. Active regressions cover announce request/delta, changed snapshots, reply, run startup, and pending export policy. No remaining merge blocker found within the documented native Linux contract.
 
 Exact consumer APIs:
+
 - `FileSystemCatalog::remove_managed_copy(&self, id: FileSystemId) -> impl Future<Output = Result<(), Error>>`: created/projected/tombstoned identities; durable one-way no-new-operation gate; native admission drain, owner-slot release, stream invalidation and targeted content/metadata/stage removal; retry after cancellation/error/restart. Unknown identity: NotFound.
 - `FileSystemCatalog::evict_projected_copy(&self, id: FileSystemId) -> impl Future<Output = Result<bool, Error>>`: now async, await required; selected projections share removal; nonselected/nonprojected returns false.
 - Native future opens/data operations through issued filesystem, file, stream and sync/session owners deny retirement; close is release. Catalog identities/Tombstones, unrelated roots/content and peers are retained. No global delete or consumer unlink.
@@ -45,4 +46,4 @@ Independent qualification: retirement 7, resource 5, outbound 4, native retireme
 
 Consumer limits remain explicit: permanent gate, no same-ID reactivation/rematerialization; path residency per-instance/process-local and reopen Passthrough; foreign process ownership returns IO WouldBlock until owners release, no forced descriptor close or idle-loop wake across processes; no transport teardown, already-delivered byte recall, unmanaged raw backend revocation, hostile directory replacement, cross-store cleanup transaction, content+metadata crash atomicity or cross-platform durability qualification. Of05 orchestration and ofdb SQL/KV removal remain consumer/separate-owner work, not resolved by this ticket.
 
-Ready for of05 public-owner integration, not a claim that of05 itself is complete. Worktree retained.
+Ready for of05 public-owner integration, not a claim that of05 itself is complete. Reviewed owner changes are now on local main; the integrated owner worktree and short-lived branch were removed after preserving identical root evidence. See the [map cleanup receipt](../map.md#cleanup-receipt).
