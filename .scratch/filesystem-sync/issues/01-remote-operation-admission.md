@@ -35,7 +35,9 @@ Complexity: medium (admission/cancellation race). Risk: high (queued mutation af
 
 ## Verification
 
-Run focused `cargo test -p file-system` admission/executor tests and record results. Final powerset/clippy/format/CRAP validation is tracked in 03.
+Follow the [shared qualification policy](../spec.md#shared-qualification-policy) and [map summary](../map.md#shared-qualification-policy): current gates are bounded focused checks on Ubuntu Linux x86_64, not powerset/workspace/CRAP sweeps delegated to 03. Select the admission and outbound test targets with `--no-default-features` under the recorded test-only watchdog; include native admitted-write completion where relevant. Record exact commands, bounds, host/revision and actual results or gaps.
+
+Keep every admission/export, peer-binding, cancellation-race, rollback, retained-commit and handle-cleanup criterion above. Controlled local decisions/in-memory exchange qualify generic executor behavior, not authenticated adapter or real-domain policy; real isolated same-host protocol qualification belongs to 03 co-delivery. Cross-platform, real WAN and physical multi-device deployment are follow-up, not this ticket's closure gates. Historical evidence below, Status and dependencies are unchanged; this documentation update runs no checks of implementation and grants no new acceptance.
 
 ## Comments
 

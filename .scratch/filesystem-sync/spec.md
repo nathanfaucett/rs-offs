@@ -76,10 +76,31 @@ Historical planning gaps: owner admission/staging/write-integrity fixes are reco
 
 Only `offs` documentation changes now. Sibling tracker documents are read-only handoff references.
 
+## Shared qualification policy
+
+Current qualification for slices 01–03 is limited to what is verifiable on the current Ubuntu Linux x86_64 host. This policy governs current gates and reruns, replacing broad final-validation requirements; it does not rewrite historical evidence, change ticket statuses/dependencies, or automatically close any ticket.
+
+- Use bounded, focused native checks for the changed owner surface and explicitly selected consumer adapter surface. Record Ubuntu/architecture, revision, package, target/filter, feature selection, command, watchdog bound and actual result. Use only the feature selections needed by those paths, not workspace/all-target/all-feature or feature-powerset sweeps. Do not run `cargo hack`, full coverage or CRAP sweeps as closure gates. A timeout, missing dependency or unavailable local facility is a recorded gap, not a pass; do not silently broaden or repeatedly extend runs.
+- Admission, cancellation races, admitted-operation completion, snapshot rollback, revision-bound complete publication, error/denial/drop cleanup, retained committed progress, peer-scoped handles, tombstones and Full/Passthrough restrictions remain mandatory. Deterministic in-memory exchange, controlled decisions and native fault injection qualify these generic owner guarantees only; dropping an unpolled future is not cleanup evidence.
+- Extraction still requires the ownership/consumer/obsolete-surface audit, focused adapter/consumer compilation and moved regressions. Its protocol/reconnect evidence must use real same-host isolated peers: separate endpoint identities, stores and lifecycle state, authenticated peer/resource binding and the actual direct stream/router path. Exercise disconnected Full edits, reconciliation and revision-specific retrieval after exchange resumes, denial/shutdown cleanup and retained local usability. Fresh-stream reconnect on an existing authenticated connection must be labelled as such, not claimed as new-connection recovery. Mock/in-memory exchange alone cannot qualify the real adapter path; controlled callbacks over real transport do not prove real domain policy.
+- Other operating systems/architectures, real WAN/NAT/relay conditions, physical multi-device deployment and deployment-scale endurance are follow-up qualification, not closure gates for these tickets. Same-host execution does not waive real local protocol correctness or any applicable integrity/admission/cleanup criterion. Detailed real-domain authorization and full Node composition remain the existing of 03/of 08 handoffs, not new extraction dependencies; they are not dismissed as deployment-only work.
+- Test watchdogs bound validation only, not production operations or permissions. Use isolated peer data and explicitly identified disposable build targets where needed. Preserve ordinary local data; do not clean shared root targets without approval. Record scope and remaining gaps rather than upgrading historical or mock evidence.
+
+Focused rerun examples, from `offs`, each with a 120-second test-only watchdog (select only the relevant suite; these are not commands run by this documentation change):
+
+```sh
+timeout 120s cargo test -p file-system --no-default-features --test admission --test outbound
+timeout 120s cargo test -p file-system --no-default-features --test integrity
+timeout 120s cargo test -p file-system --no-default-features --lib file_system_tests
+timeout 120s cargo test -p file-system --no-default-features --test file_system --test resource
+```
+
+For shared extraction evidence, the consumer owner can run the existing focused `storage-server` network library filter `filesystem_transport::` under a recorded watchdog on this host, plus selected router/resource-binding/lifecycle regressions. This document authorizes no sibling edits or execution now. No whole consumer suite is required solely to repeat historical acceptance. Ownership/source/dependency checks and scoped formatting/lint checks, if relevant to implementation changes, are similarly bounded and targeted; no broad sweep substitutes for behavioral evidence.
+
 ## Verification
 
 Generic tests in `offs`: denial between reception and import/write, cancelled policy waits, admission race, invalid snapshot rollback, peer-scoped handles, stale revisions, cancelled polled multi-chunk fetch, fault cleanup and write publication, retained earlier commits, disconnected Full edits, reconnect/late join with tombstones, unchanged residency/Passthrough behavior.
 
 Extraction acceptance co-delivered with of 02 covers adapter/consumer builds, moved Iroh regressions, transport lifecycle and generic filesystem reconnect evidence. Detailed authenticated local execution integration follows in [of 03](../../../of/.scratch/offline-first-nodes/issues/03-execution-boundary-authorization.md): actual peer/resource binding, pairing/allowlist admission distinguished from resource permission, locally learned trust/allowlist and resource-policy changes preventing the next affected operation on both peers even on established connections/sessions, pending-policy/staging shutdown, admitted-operation completion, prevention of later work and cleanup. Full offline Node/reconnect acceptance follows in [of 08](../../../of/.scratch/offline-first-nodes/issues/08-offline-node-integration-and-final-validation.md). Elapsed disconnection or unavailable remote Management alone must not deny locally permitted work; these downstream suites do not block extraction completion.
 
-The original implementation validation plan called for focused tests, feature-powerset, formatting/clippy and CRAP evaluation. Actual historical results and limitations belong to the resolved tickets and map; the later user validation override in the map governs reruns. This documentation checkpoint runs no builds/tests and makes no new code-test, complexity or consumer acceptance claim.
+The [shared qualification policy](#shared-qualification-policy) governs current gates and reruns; the [map](map.md#shared-qualification-policy) and each ticket point to it. Earlier feature-powerset, workspace lint and CRAP commands/results below the tickets' historical evidence headings remain historical only, not requirements to repeat. This documentation checkpoint runs no builds/tests and makes no new code-test, complexity or consumer acceptance claim.

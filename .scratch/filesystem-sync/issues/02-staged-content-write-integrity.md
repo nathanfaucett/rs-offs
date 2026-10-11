@@ -35,7 +35,9 @@ Complexity: medium-to-high (separate content/metadata persistence). Risk: high (
 
 ## Verification
 
-Use deterministic polled streams, decisions and fault injection; dropping an unpolled future is not staging-cleanup evidence. Run focused failure-boundary tests and existing session/revision/residency regressions; record results. Final validation is in 03.
+Follow the [shared qualification policy](../spec.md#shared-qualification-policy) and [map summary](../map.md#shared-qualification-policy). On current Ubuntu Linux x86_64, run only watchdog-bounded focused integrity and native `file_system_tests` targets, plus selected session/revision/residency regressions as relevant; use the necessary native feature selection, not broad final validation delegated to 03. Record host/revision, exact commands/bounds, results and gaps; no `cargo hack`, feature-powerset, workspace or CRAP sweeps are closure gates.
+
+Use deterministic polled streams, decisions and fault injection; dropping an unpolled future is not staging-cleanup evidence. Preserve complete revision-bound publication, stale/denied/interrupted rejection, native write-failure boundaries, admitted completion, retry, handle/stage cleanup and retained valid progress. Generic fixtures do not prove real transport or real-domain authorization; 03 retains real isolated same-host adapter/reconnect qualification. Cross-platform, real WAN and physical multi-device deployment are follow-up, not closure gates, without extending the proven in-process guarantees to crash atomicity or multi-instance concurrency. Historical evidence below, Status and dependencies are unchanged; no implementation validation is run or upgraded by this documentation update.
 
 ## Comments
 

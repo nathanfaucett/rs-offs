@@ -2,7 +2,7 @@
 
 ## Notes
 
-- User validation override: stop full CRAP and full `cargo hack` feature-powerset runs; use focused tests/checks only. Run `cargo clean` on isolated build targets when worktree work finishes. Check target paths first; do not clean shared root targets without explicit approval. Existing recorded broad-run evidence remains historical, not a requirement to repeat it.
+- Current validation override: [shared qualification policy](#shared-qualification-policy) limits gates to bounded, focused checks on the current Ubuntu Linux x86_64 host; no `cargo hack`, feature-powerset, full coverage or CRAP sweeps. No builds/tests or cleanup are run by this documentation change. For later worktree cleanup, check isolated disposable target paths first; do not clean shared root targets without explicit approval. Existing broad-run evidence remains historical, not a requirement to repeat it.
 
 Original `offs` plan and implementation tracker. Read [spec](spec.md) and [metadata storage/execution contract](../../docs/metadata.md), preserving their current domain guidance. Tickets 01–03 are resolved and integrated in original offs at `516b6926136c348ba3e7a183e4145b8fde7c1fd5`. Coordinated original of `e7526fe` / ofdb `25b92516` cutover and normal-original consumer validation complete offs03 extraction acceptance. Extraction removes concrete Iroh ownership; original modified domain docs were preserved during acceptance. Current workspace cleanup is recorded below. Detailed of03 local authorization and of08 full Node acceptance remain separate consumer responsibilities, not extraction blockers.
 
@@ -13,6 +13,14 @@ Original `offs` plan and implementation tracker. Read [spec](spec.md) and [metad
 | Adapter extraction/reconnect | [03](issues/03-iroh-extraction-offline-reconnect.md) | resolved | 01, 02             | ofdb 01–05 acceptance; co-delivery with [of 02](../../../of/.scratch/offline-first-nodes/issues/02-public-persistence-and-sync-integration.md); detailed auth follows in [of 03](../../../of/.scratch/offline-first-nodes/issues/03-execution-boundary-authorization.md) |
 
 Issues use canonical triage Status, Type, Work status, numeric local Blocked by, and separate external dependency text. 01 was reopened for P1 outbound export authorization/cancellation, fixed in `5e72a68`, and is resolved again with exact review evidence; 02 remains resolved. 03 is now resolved on integrated originals: owner generic guarantees plus consumer adapter build, moved regressions, lifecycle and authenticated transport/session reconnect are qualified. Controlled callbacks are not detailed real-domain policy/full Node proof. On completion append an Answer and evidence, set Status to resolved, and record its result here. `.scratch` is git-ignored by default; these finished tracker declarations are selectively tracked.
+
+## Shared qualification policy
+
+The [spec policy](spec.md#shared-qualification-policy) is the shared current gate for [01 admission](issues/01-remote-operation-admission.md#verification), [02 content integrity](issues/02-staged-content-write-integrity.md#verification) and [03 extraction/reconnect](issues/03-iroh-extraction-offline-reconnect.md#verification). Use recorded watchdog-bounded native package/target/filter checks with only necessary feature selections, not workspace or feature sweeps. Record host, revision, exact command/bound, result, evidence type and gaps; a timeout or unavailable facility is not acceptance.
+
+Generic controlled-decision/native-fault tests retain all data-integrity, admission-race, cancellation/completion, cleanup, retained-progress, tombstone and residency requirements. Extraction retains ownership/obsolete-consumer audits and focused builds/moved tests, plus real same-host isolated peers with separate endpoint identities/stores/lifecycle state, authenticated binding, actual stream/router exchange and offline edit/reconciliation/revision retrieval. Mock exchange is not real protocol qualification; real transport with controlled callbacks is not real-domain policy evidence. Label fresh-stream reuse of an existing connection accurately.
+
+Cross-platform/architecture, real WAN/NAT/relay and physical multi-device deployment/endurance are follow-up, not ticket closure gates. This host-local scope does not waive real local protocol correctness or move existing detailed of 03 authorization/full Node of 08 responsibilities into deployment-only follow-up. Statuses, dependencies, co-delivery and ownership criteria remain unchanged. Historical acceptance stays historical with its existing limits; this docs-only policy adds no passing implementation evidence and closes no tickets.
 
 ## Cleanup receipt
 
