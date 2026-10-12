@@ -1,9 +1,0 @@
-   Compiling file-system v0.1.0 (/home/nathan/code/rust/aicacia/offs/target/managed-retirement-worktree/crates/file-system)
-    Finished `test` profile [optimized + debuginfo] target(s) in 17.82s
-     Running tests/retirement.rs (target/owner-retirement/debug/deps/retirement-a43b622a8c73e459)
-
-running 2 tests
-test projected_eviction_revokes_retained_native_handles ... ok
-test passthrough_denies_delete_and_rename_including_descendants_and_destinations ... ok
-
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s

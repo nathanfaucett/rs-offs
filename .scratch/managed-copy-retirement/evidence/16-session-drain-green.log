@@ -1,9 +1,0 @@
-   Compiling file-system v0.1.0 (/home/nathan/code/rust/aicacia/offs/target/managed-retirement-worktree/crates/file-system)
-    Finished `test` profile [optimized + debuginfo] target(s) in 6.10s
-     Running unittests src/lib.rs (target/owner-retirement/debug/deps/file_system-4161be2eef9f3213)
-
-running 2 tests
-test file_system_tests::retirement_allows_admitted_session_write_to_finish_and_revokes_cloned_owner ... ok
-test file_system_tests::retirement_drains_admitted_native_write_and_cancelled_drain_retries ... ok
-
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.66s
