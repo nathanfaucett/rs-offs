@@ -630,6 +630,7 @@ dependencies = [
  "async-stream",
  "futures",
  "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
@@ -700,8 +701,17 @@ dependencies = [
  "ofdb-btree",
  "ofdb-btree-automerge",
  "ofdb-kv-store",
+ "ofdb-sync-runtime",
  "postcard",
  "serde",
+]
+
+[[package]]
+name = "ofdb-sync-runtime"
+version = "0.1.0"
+dependencies = [
+ "ofdb-btree",
+ "tokio",
 ]
 
 [[package]]
