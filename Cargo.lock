@@ -62,6 +62,7 @@ dependencies = [
  "hex",
  "hexane",
  "itertools",
+ "js-sys",
  "leb128",
  "rand",
  "rustc-hash",
@@ -72,6 +73,8 @@ dependencies = [
  "tinyvec",
  "tracing",
  "unicode-segmentation",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -494,9 +497,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi",
  "rand_core",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "gloo-timers"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -542,6 +559,7 @@ checksum = "8f4ecba0bb4e14df997df7cab6d1b584c6432d8865cf2adfced814706d715a7b"
 dependencies = [
  "leb128",
  "thiserror 2.0.21",
+ "web-sys",
 ]
 
 [[package]]
@@ -629,6 +647,7 @@ dependencies = [
  "async-lock",
  "async-stream",
  "futures",
+ "ofdb-platform",
  "thiserror 2.0.21",
  "tokio",
 ]
@@ -643,6 +662,7 @@ dependencies = [
  "base64 0.21.7",
  "futures",
  "ofdb-btree",
+ "ofdb-platform",
  "serde",
  "sha2 0.10.9",
  "uuid",
@@ -674,10 +694,10 @@ dependencies = [
  "ofdb-btree-redb",
  "ofdb-kv-store",
  "ofdb-kv-sync",
+ "ofdb-platform",
  "ofdb-value",
  "redb",
  "serde_json",
- "tokio",
  "uuid",
 ]
 
@@ -707,10 +727,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofdb-platform"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "gloo-timers",
+ "js-sys",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "ofdb-sync-runtime"
 version = "0.1.0"
 dependencies = [
  "ofdb-btree",
+ "ofdb-platform",
  "tokio",
 ]
 
@@ -1218,6 +1250,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23f0c9c52aa7cd7d77769a4cfe2a9adb1b331f489a41d912ce14513d5ab995c6"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "web-sys"
+version = "0.3.106"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88261b9deccee56594c11a3460c462c41f58d148598fe70ad77070126a68aba4"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]
