@@ -2,6 +2,8 @@ use core::{error::Error, future::Future};
 
 use tokio::sync::{broadcast, mpsc};
 
+use ofdb_platform::MaybeSend;
+
 use crate::{FileHandle, FileHandleId, FileOperation, FileResponse, OpenRequest, SyncMessage};
 use uuid::Uuid;
 
@@ -18,22 +20,22 @@ pub trait Transport<PeerId> {
         &self,
         peer: PeerId,
         message: SyncMessage<PeerId>,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
     fn broadcast(
         &self,
         message: SyncMessage<PeerId>,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
     fn subscribe(&self) -> broadcast::Receiver<IncomingMessage<PeerId>>;
 }
 
 pub trait FileSessionService<PeerId>: Transport<PeerId> {
-    type Handle: FileHandle<PeerId, Error = Self::Error> + Send;
+    type Handle: FileHandle<PeerId, Error = Self::Error> + MaybeSend;
 
     fn open(
         &self,
         peer: PeerId,
         request: OpenRequest,
-    ) -> impl Future<Output = Result<Self::Handle, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Self::Handle, Self::Error>> + MaybeSend;
 
     fn subscribe_file_sessions(&self) -> broadcast::Receiver<SessionRequest<PeerId>>;
 

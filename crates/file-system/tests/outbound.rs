@@ -28,7 +28,9 @@ fn take_messages(
 #[tokio::test]
 async fn initial_and_changed_snapshots_are_authorized_per_destination() {
     let root = std::env::temp_dir().join(format!("offs-outbound-{}", Uuid::now_v7()));
-    let files = FileSystem::open(&root, 1_u8).expect("filesystem opens");
+    let files = FileSystem::open(&root, 1_u8)
+        .await
+        .expect("filesystem opens");
     files
         .set_residency("", Residency::Full)
         .await
@@ -173,7 +175,9 @@ async fn cancellation_releases_polled_pending_outbound_sends() {
         OutboundPath::RunStartup,
     ] {
         let root = std::env::temp_dir().join(format!("offs-outbound-{}", Uuid::now_v7()));
-        let files = FileSystem::open(&root, 1_u8).expect("filesystem opens");
+        let files = FileSystem::open(&root, 1_u8)
+            .await
+            .expect("filesystem opens");
         files
             .set_residency("", Residency::Full)
             .await
@@ -280,9 +284,10 @@ async fn retirement_releases_polled_pending_outbound_sends() {
     ] {
         let root = std::env::temp_dir().join(format!("offs-outbound-{}", Uuid::now_v7()));
         let catalog = file_system::FileSystemCatalog::open(&root).expect("catalog opens");
-        let resource = catalog.create(None).expect("resource");
+        let resource = catalog.create(None).await.expect("resource");
         let files = catalog
             .open_filesystem(resource.id, 1_u8)
+            .await
             .expect("filesystem opens");
         files
             .set_residency("", Residency::Full)
@@ -378,9 +383,10 @@ async fn retirement_releases_polled_pending_outbound_sends() {
 async fn retirement_denies_pending_outbound_policy_instead_of_reporting_success() {
     let root = std::env::temp_dir().join(format!("offs-outbound-policy-{}", Uuid::now_v7()));
     let catalog = file_system::FileSystemCatalog::open(&root).expect("catalog");
-    let resource = catalog.create(None).expect("resource");
+    let resource = catalog.create(None).await.expect("resource");
     let files = catalog
         .open_filesystem(resource.id, 1_u8)
+        .await
         .expect("filesystem");
     let network = MemoryNetwork::new(32);
     let transport = network.transport(1);

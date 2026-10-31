@@ -373,6 +373,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "ofdb-kv",
+ "ofdb-platform",
  "postcard",
  "redb",
  "serde",
@@ -669,6 +670,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofdb-btree-indexeddb"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "js-sys",
+ "ofdb-btree",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "ofdb-btree-redb"
 version = "0.1.0"
 dependencies = [
@@ -691,6 +703,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "ofdb-btree",
+ "ofdb-btree-indexeddb",
  "ofdb-btree-redb",
  "ofdb-kv-store",
  "ofdb-kv-sync",
@@ -1218,6 +1231,17 @@ dependencies = [
  "rustversion",
  "wasm-bindgen-macro",
  "wasm-bindgen-shared",
+]
+
+[[package]]
+name = "wasm-bindgen-futures"
+version = "0.4.79"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3cbab34de2d982e9b48e18d216d04c4a6f641066ff19ffb699980f591ee3610e"
+dependencies = [
+ "js-sys",
+ "tokio",
+ "wasm-bindgen",
 ]
 
 [[package]]

@@ -58,7 +58,9 @@ async fn write_offset_and_append_faults_preserve_content_revision_and_cleanup() 
             ContentStep::Metadata,
         ] {
             let root = root();
-            let filesystem = FileSystem::open(&root, 1_u8).expect("filesystem opens");
+            let filesystem = FileSystem::open(&root, 1_u8)
+                .await
+                .expect("filesystem opens");
             filesystem
                 .set_residency("", Residency::Full)
                 .await
@@ -115,7 +117,9 @@ async fn write_offset_and_append_faults_preserve_content_revision_and_cleanup() 
 #[tokio::test]
 async fn admitted_session_write_finishes_when_cancelled_at_native_publication() {
     let root = root();
-    let filesystem = FileSystem::open(&root, 1_u8).expect("filesystem opens");
+    let filesystem = FileSystem::open(&root, 1_u8)
+        .await
+        .expect("filesystem opens");
     filesystem
         .set_residency("", Residency::Full)
         .await
@@ -179,7 +183,9 @@ async fn admitted_session_write_finishes_when_cancelled_at_native_publication() 
 #[tokio::test]
 async fn revision_bound_session_reads_reject_provider_changes_between_reads() {
     let root = root();
-    let filesystem = FileSystem::open(&root, 1_u8).expect("filesystem opens");
+    let filesystem = FileSystem::open(&root, 1_u8)
+        .await
+        .expect("filesystem opens");
     filesystem
         .set_residency("", Residency::Full)
         .await
@@ -223,7 +229,9 @@ async fn revision_bound_session_reads_reject_provider_changes_between_reads() {
 #[tokio::test]
 async fn cancellation_while_queued_for_execution_never_reaches_policy_or_mutation() {
     let root = root();
-    let filesystem = FileSystem::open(&root, 1_u8).expect("filesystem opens");
+    let filesystem = FileSystem::open(&root, 1_u8)
+        .await
+        .expect("filesystem opens");
     filesystem
         .set_residency("", Residency::Full)
         .await
@@ -320,8 +328,12 @@ async fn fetch_write_sync_and_publish_faults_keep_metadata_and_earlier_files() {
     for step in [ContentStep::Write, ContentStep::Sync, ContentStep::Publish] {
         let source_root = root();
         let target_root = root();
-        let source = FileSystem::open(&source_root, 1_u8).expect("source opens");
-        let target = FileSystem::open(&target_root, 2_u8).expect("target opens");
+        let source = FileSystem::open(&source_root, 1_u8)
+            .await
+            .expect("source opens");
+        let target = FileSystem::open(&target_root, 2_u8)
+            .await
+            .expect("target opens");
         source
             .set_residency("", Residency::Full)
             .await
@@ -381,13 +393,17 @@ async fn retirement_drains_admitted_native_write_and_cancelled_drain_retries() {
             let root = root();
             let catalog =
                 std::sync::Arc::new(crate::FileSystemCatalog::open(&root).expect("catalog"));
-            let resource = catalog.create(None).expect("resource");
+            let resource = catalog.create(None).await.expect("resource");
             if projected {
-                catalog.mark_projected(resource.id).expect("projection");
+                catalog
+                    .mark_projected(resource.id)
+                    .await
+                    .expect("projection");
             }
-            let before = catalog.snapshot().expect("catalog snapshot");
+            let before = catalog.snapshot().await.expect("catalog snapshot");
             let filesystem = catalog
                 .open_filesystem(resource.id, 1_u8)
+                .await
                 .expect("native copy");
             filesystem
                 .set_residency("", Residency::Full)
@@ -449,16 +465,16 @@ async fn retirement_drains_admitted_native_write_and_cancelled_drain_retries() {
                     .expect("retry cancelled drain");
             }
             assert!(!local_root.exists());
-            assert_eq!(catalog.snapshot().expect("catalog intact"), before);
+            assert_eq!(catalog.snapshot().await.expect("catalog intact"), before);
             assert!(matches!(
-                catalog.open_filesystem(resource.id, 1_u8),
+                catalog.open_filesystem(resource.id, 1_u8).await,
                 Err(Error::PermissionDenied)
             ));
             drop(filesystem);
             drop(catalog);
             let reopened = crate::FileSystemCatalog::open(&root).expect("restart");
             assert!(matches!(
-                reopened.open_filesystem(resource.id, 1_u8),
+                reopened.open_filesystem(resource.id, 1_u8).await,
                 Err(Error::PermissionDenied)
             ));
             reopened
@@ -475,10 +491,11 @@ async fn retirement_drains_admitted_native_write_and_cancelled_drain_retries() {
 async fn retirement_allows_admitted_session_write_to_finish_and_revokes_cloned_owner() {
     let root = root();
     let catalog = std::sync::Arc::new(crate::FileSystemCatalog::open(&root).expect("catalog"));
-    let resource = catalog.create(None).expect("resource");
+    let resource = catalog.create(None).await.expect("resource");
     let filesystem = std::sync::Arc::new(
         catalog
             .open_filesystem(resource.id, 1_u8)
+            .await
             .expect("native copy"),
     );
     let cloned = std::sync::Arc::clone(&filesystem);

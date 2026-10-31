@@ -8,11 +8,15 @@ use uuid::Uuid;
 async fn projected_eviction_revokes_retained_native_handles() {
     let root = env::temp_dir().join(format!("offs-retirement-{}", Uuid::now_v7()));
     let catalog = FileSystemCatalog::open(&root).expect("open catalog");
-    let resource = catalog.create(None).expect("create resource");
-    catalog.mark_projected(resource.id).expect("mark projected");
+    let resource = catalog.create(None).await.expect("create resource");
+    catalog
+        .mark_projected(resource.id)
+        .await
+        .expect("mark projected");
     let filesystem = Arc::new(
         catalog
             .open_filesystem(resource.id, 1_u8)
+            .await
             .expect("open filesystem"),
     );
     let cloned = Arc::clone(&filesystem);
@@ -55,7 +59,7 @@ async fn projected_eviction_revokes_retained_native_handles() {
         Some(Err(Error::PermissionDenied))
     ));
     assert!(matches!(
-        catalog.open_filesystem(resource.id, 1_u8),
+        catalog.open_filesystem(resource.id, 1_u8).await,
         Err(Error::PermissionDenied)
     ));
     drop(handle);
@@ -69,7 +73,9 @@ async fn projected_eviction_revokes_retained_native_handles() {
 #[tokio::test]
 async fn passthrough_denies_delete_and_rename_including_descendants_and_destinations() {
     let root = env::temp_dir().join(format!("offs-retirement-policy-{}", Uuid::now_v7()));
-    let filesystem = file_system::FileSystem::open(&root, 1_u8).expect("open filesystem");
+    let filesystem = file_system::FileSystem::open(&root, 1_u8)
+        .await
+        .expect("open filesystem");
     filesystem
         .set_residency("", Residency::Full)
         .await
@@ -146,17 +152,21 @@ async fn created_copy_cleanup_failure_retries_after_native_reopen_without_catalo
             file_system::FileSystemId::parse(&env::var("OFFS_REOPEN_OTHER").expect("other ID"))
                 .expect("parse other ID");
         assert!(matches!(
-            catalog.open_filesystem(id, 1_u8),
+            catalog.open_filesystem(id, 1_u8).await,
             Err(Error::PermissionDenied)
         ));
         catalog
             .remove_managed_copy(id)
             .await
             .expect("fresh process retry");
-        assert_eq!(catalog.snapshot().expect("durable identities").len(), 3);
+        assert_eq!(
+            catalog.snapshot().await.expect("durable identities").len(),
+            3
+        );
         assert_eq!(
             catalog
                 .snapshot()
+                .await
                 .expect("durable tombstone")
                 .iter()
                 .filter(|entry| entry.deleted)
@@ -165,6 +175,7 @@ async fn created_copy_cleanup_failure_retries_after_native_reopen_without_catalo
         );
         let retained = catalog
             .open_filesystem(other, 1_u8)
+            .await
             .expect("fresh native unrelated reopen");
         assert_eq!(
             retained.read("file").await.expect("fresh native content"),
@@ -174,21 +185,30 @@ async fn created_copy_cleanup_failure_retries_after_native_reopen_without_catalo
     }
     let root = env::temp_dir().join(format!("offs-retirement-retry-{}", Uuid::now_v7()));
     let catalog = FileSystemCatalog::open(&root).expect("open catalog");
-    let resource = catalog.create(Some("created".into())).expect("resource");
-    let unrelated = catalog.create(Some("unrelated".into())).expect("unrelated");
-    let tombstone = catalog.create(None).expect("tombstone");
+    let resource = catalog
+        .create(Some("created".into()))
+        .await
+        .expect("resource");
+    let unrelated = catalog
+        .create(Some("unrelated".into()))
+        .await
+        .expect("unrelated");
+    let tombstone = catalog.create(None).await.expect("tombstone");
     catalog
         .delete(tombstone.id)
+        .await
         .expect("delete unrelated identity");
-    let before = catalog.snapshot().expect("catalog snapshot");
+    let before = catalog.snapshot().await.expect("catalog snapshot");
     let filesystem = Arc::new(
         catalog
             .open_filesystem(resource.id, 1_u8)
+            .await
             .expect("open created copy"),
     );
     let clone = Arc::clone(&filesystem);
     let other = catalog
         .open_filesystem(unrelated.id, 1_u8)
+        .await
         .expect("open unrelated");
     filesystem
         .set_residency("", Residency::Full)
@@ -224,7 +244,7 @@ async fn created_copy_cleanup_failure_retries_after_native_reopen_without_catalo
         Err(Error::PermissionDenied)
     ));
     assert!(matches!(clone.residency(""), Err(Error::PermissionDenied)));
-    assert_eq!(catalog.snapshot().expect("unchanged catalog"), before);
+    assert_eq!(catalog.snapshot().await.expect("unchanged catalog"), before);
     assert_eq!(other.read("file").await.expect("unrelated usable"), b"keep");
     fs::remove_file(&local_root).expect("remove obstruction");
     fs::rename(&saved, &local_root).expect("restore native copy");
@@ -237,11 +257,11 @@ async fn created_copy_cleanup_failure_retries_after_native_reopen_without_catalo
     let reopened =
         FileSystemCatalog::open(&root).expect("reopen catalog with old filesystem handles alive");
     assert!(matches!(
-        reopened.open_filesystem(resource.id, 1_u8),
+        reopened.open_filesystem(resource.id, 1_u8).await,
         Err(Error::PermissionDenied)
     ));
     assert!(matches!(
-        file_system::FileSystem::open(&local_root, 1_u8),
+        file_system::FileSystem::open(&local_root, 1_u8).await,
         Err(Error::PermissionDenied)
     ));
     reopened
@@ -256,6 +276,7 @@ async fn created_copy_cleanup_failure_retries_after_native_reopen_without_catalo
     assert_eq!(
         reopened
             .snapshot()
+            .await
             .expect("identities and tombstones preserved"),
         before
     );
@@ -269,7 +290,7 @@ async fn created_copy_cleanup_failure_retries_after_native_reopen_without_catalo
     drop(reopened);
     let restarted = FileSystemCatalog::open(&root).expect("restart without retained handles");
     assert!(matches!(
-        restarted.open_filesystem(resource.id, 1_u8),
+        restarted.open_filesystem(resource.id, 1_u8).await,
         Err(Error::PermissionDenied)
     ));
     restarted
@@ -278,6 +299,7 @@ async fn created_copy_cleanup_failure_retries_after_native_reopen_without_catalo
         .expect("retry after full restart");
     let retained = restarted
         .open_filesystem(unrelated.id, 1_u8)
+        .await
         .expect("reopen unrelated native store");
     assert_eq!(
         retained
@@ -328,9 +350,10 @@ async fn retirement_cancels_pending_sync_admission_and_invalidates_live_sessions
 
     let root = env::temp_dir().join(format!("offs-retirement-sync-{}", Uuid::now_v7()));
     let catalog = FileSystemCatalog::open(&root).expect("catalog");
-    let resource = catalog.create(None).expect("resource");
+    let resource = catalog.create(None).await.expect("resource");
     let filesystem = catalog
         .open_filesystem(resource.id, 1_u8)
+        .await
         .expect("native filesystem");
     filesystem
         .set_residency("", Residency::Full)
@@ -426,9 +449,10 @@ async fn retirement_wakes_idle_sync_run_and_preserves_target_tombstone() {
 
     let root = env::temp_dir().join(format!("offs-retirement-run-{}", Uuid::now_v7()));
     let catalog = FileSystemCatalog::open(&root).expect("catalog");
-    let resource = catalog.create(None).expect("resource");
+    let resource = catalog.create(None).await.expect("resource");
     let filesystem = catalog
         .open_filesystem(resource.id, 1_u8)
+        .await
         .expect("native filesystem");
     let network = file_system::MemoryNetwork::new(32);
     let mut run = Box::pin(filesystem.metadata_sync(network.transport(1)).run());
@@ -437,15 +461,18 @@ async fn retirement_wakes_idle_sync_run_and_preserves_target_tombstone() {
             .poll(&mut Context::from_waker(Waker::noop()))
             .is_pending()
     );
-    catalog.delete(resource.id).expect("caller tombstone");
-    let before = catalog.snapshot().expect("tombstoned identity");
+    catalog.delete(resource.id).await.expect("caller tombstone");
+    let before = catalog.snapshot().await.expect("tombstoned identity");
     catalog
         .remove_managed_copy(resource.id)
         .await
         .expect("retire tombstoned copy");
     assert!(matches!(run.await, Err(Error::PermissionDenied)));
     assert_eq!(
-        catalog.snapshot().expect("target tombstone preserved"),
+        catalog
+            .snapshot()
+            .await
+            .expect("target tombstone preserved"),
         before
     );
     assert!(matches!(
@@ -466,12 +493,14 @@ async fn retirement_cancels_unpublished_content_stage_without_touching_provider(
 
     let root = env::temp_dir().join(format!("offs-retirement-stage-{}", Uuid::now_v7()));
     let catalog = FileSystemCatalog::open(&root).expect("catalog");
-    let resource = catalog.create(None).expect("target resource");
+    let resource = catalog.create(None).await.expect("target resource");
     let target = catalog
         .open_filesystem(resource.id, 2_u8)
+        .await
         .expect("native target");
-    let source =
-        file_system::FileSystem::open(root.join("provider"), 1_u8).expect("native provider");
+    let source = file_system::FileSystem::open(root.join("provider"), 1_u8)
+        .await
+        .expect("native provider");
     source
         .set_residency("", Residency::Full)
         .await
@@ -549,6 +578,7 @@ async fn native_process_lease_blocks_cleanup_until_owner_releases() {
         let root = std::path::PathBuf::from(root);
         let id = env::var("OFFS_LEASE_ID").expect("resource ID");
         let filesystem = file_system::FileSystem::open(root.join("filesystems").join(id), 1_u8)
+            .await
             .expect("child native copy");
         filesystem
             .set_residency("", Residency::Full)
@@ -572,8 +602,8 @@ async fn native_process_lease_blocks_cleanup_until_owner_releases() {
     }
     let root = env::temp_dir().join(format!("offs-retirement-process-{}", Uuid::now_v7()));
     let catalog = FileSystemCatalog::open(&root).expect("catalog");
-    let resource = catalog.create(None).expect("resource");
-    let before = catalog.snapshot().expect("identity");
+    let resource = catalog.create(None).await.expect("resource");
+    let before = catalog.snapshot().await.expect("identity");
     let child = std::process::Command::new(env::current_exe().expect("test executable"))
         .args([
             "--exact",
@@ -598,7 +628,7 @@ async fn native_process_lease_blocks_cleanup_until_owner_releases() {
         "cleanup cannot unlink another process's native copy"
     );
     assert!(matches!(
-        catalog.open_filesystem(resource.id, 1_u8),
+        catalog.open_filesystem(resource.id, 1_u8).await,
         Err(Error::PermissionDenied)
     ));
     fs::write(root.join("release"), b"").expect("release child owner");
@@ -614,7 +644,7 @@ async fn native_process_lease_blocks_cleanup_until_owner_releases() {
         .await
         .expect("retry after native owner releases");
     assert!(!local_root.exists());
-    assert_eq!(catalog.snapshot().expect("catalog preserved"), before);
+    assert_eq!(catalog.snapshot().await.expect("catalog preserved"), before);
     drop(catalog);
     fs::remove_dir_all(root).expect("cleanup");
 }

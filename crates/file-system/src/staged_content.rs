@@ -1,14 +1,17 @@
 use std::{
     fs::{self, File, OpenOptions},
-    path::{Path, PathBuf},
+    io::{Seek, SeekFrom, Write},
+    path::PathBuf,
 };
 
+use ofdb_platform::BoxFuture;
 use uuid::Uuid;
 
-use crate::Error;
+use crate::{Error, content::Staged};
 
 pub(crate) struct StagedContent {
-    pub(crate) file: File,
+    file: File,
+    content_root: PathBuf,
     temporary: PathBuf,
     destination: PathBuf,
     published: bool,
@@ -16,7 +19,7 @@ pub(crate) struct StagedContent {
 }
 
 impl StagedContent {
-    pub(crate) fn new(destination: PathBuf) -> Result<Self, Error> {
+    pub(crate) fn new(content_root: PathBuf, destination: PathBuf) -> Result<Self, Error> {
         fs::create_dir_all(destination.parent().expect("content has a parent"))?;
         let temporary = destination.with_extension(format!("{}.tmp", Uuid::now_v7()));
         let file = OpenOptions::new()
@@ -29,6 +32,7 @@ impl StagedContent {
             })?;
         Ok(Self {
             file,
+            content_root,
             temporary,
             destination,
             published: false,
@@ -36,18 +40,63 @@ impl StagedContent {
         })
     }
 
-    pub(crate) fn copy_from(&mut self, source: &Path) -> Result<(), Error> {
-        std::io::copy(&mut File::open(source)?, &mut self.file)?;
+    fn seek(&mut self, position: SeekFrom) -> Result<(), Error> {
+        self.file.seek(position)?;
         Ok(())
     }
+}
 
-    pub(crate) fn publish(&mut self) -> Result<(), Error> {
-        fs::rename(&self.temporary, &self.destination)?;
-        self.published = true;
-        Ok(())
+impl Staged for StagedContent {
+    fn write<'a>(&'a mut self, bytes: &'a [u8]) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(async { self.file.write_all(bytes).map_err(Error::from) })
     }
 
-    pub(crate) fn commit(mut self) {
+    fn copy_from<'a>(
+        &'a mut self,
+        file_id: Uuid,
+        revision: Uuid,
+    ) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(async move {
+            let source = self
+                .content_root
+                .join(file_id.to_string())
+                .join(revision.to_string());
+            std::io::copy(&mut File::open(source)?, &mut self.file)?;
+            Ok(())
+        })
+    }
+
+    fn write_at<'a>(
+        &'a mut self,
+        offset: u64,
+        bytes: &'a [u8],
+    ) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(async move {
+            self.seek(SeekFrom::Start(offset))?;
+            self.file.write_all(bytes).map_err(Error::from)
+        })
+    }
+
+    fn write_end<'a>(&'a mut self, bytes: &'a [u8]) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(async move {
+            self.seek(SeekFrom::End(0))?;
+            self.file.write_all(bytes).map_err(Error::from)
+        })
+    }
+
+    fn sync<'a>(&'a mut self) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(async { self.file.sync_all().map_err(Error::from) })
+    }
+
+    fn publish<'a>(&'a mut self) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(async move {
+            fs::rename(&self.temporary, &self.destination)?;
+            self.published = true;
+            Ok(())
+        })
+    }
+
+    fn commit(&mut self) {
         self.committed = true;
     }
 }

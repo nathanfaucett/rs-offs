@@ -7,6 +7,9 @@ mod file_system;
 #[cfg(test)]
 mod file_system_tests;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
+
 mod managed_copy;
 mod memory_transport;
 mod operation;
@@ -14,10 +17,14 @@ mod path;
 mod protocol;
 mod residency;
 mod resource;
+#[cfg(not(target_arch = "wasm32"))]
 mod staged_content;
 mod stream;
 mod sync;
 mod transport;
+
+mod content;
+mod root;
 
 pub use error::Error;
 pub use file_meta::{FileKind, FileMeta};

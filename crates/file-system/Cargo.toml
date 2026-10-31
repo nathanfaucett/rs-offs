@@ -14,29 +14,79 @@ name = "file_system"
 
 [features]
 default = []
+browser = []
 
 [dependencies]
 # Internal
-ofdb-kv = { version = "0.1", path = "../../../ofdb/crates/kv", default-features = false, features = ["redb", "sync"] }
+ofdb-platform = { version = "0.1", path = "../../../ofdb/crates/platform", default-features = false }
 
 # Async
-futures-core = { version = "0.3", default-features = false, features = ["alloc"] }
-futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
-tokio = { version = "1.52", default-features = false, features = ["macros", "sync"] }
+futures-core = { version = "0.3", default-features = false, features = [
+    "alloc",
+] }
+futures-util = { version = "0.3", default-features = false, features = [
+    "alloc",
+] }
+
+# Async runtime
+tokio = { version = "1.52", default-features = false, features = [
+    "macros",
+    "sync",
+] }
 
 # Serialization
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
-serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
+serde = { version = "1.0", default-features = false, features = [
+    "derive",
+    "std",
+] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 
+# Utilities
+bytes = { version = "1.11", default-features = false, features = [
+    "serde",
+    "std",
+] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Internal
+ofdb-kv = { version = "0.1", path = "../../../ofdb/crates/kv", default-features = false, features = [
+    "redb",
+    "sync",
+] }
+
+# Utilities
+uuid = { version = "1.26", default-features = false, features = [
+    "serde",
+    "std",
+    "v7",
+] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# Internal
+ofdb-kv = { version = "0.1", path = "../../../ofdb/crates/kv", default-features = false, features = [
+    "indexeddb",
+    "sync",
+] }
+
+# Utilities
+uuid = { version = "1.26", default-features = false, features = [
+    "serde",
+    "std",
+    "v7",
+    "js",
+] }
+
+[dev-dependencies]
 # Storage
 redb = { version = "4.3", default-features = false, features = ["std"] }
 
-# Utilities
-bytes = { version = "1.11", default-features = false, features = ["serde", "std"] }
-uuid = { version = "1.26", default-features = false, features = ["serde", "std", "v7"] }
-
-[dev-dependencies]
 # Async
-futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
-tokio = { version = "1.52", default-features = false, features = ["macros", "rt", "time"] }
+futures-util = { version = "0.3", default-features = false, features = [
+    "alloc",
+] }
+tokio = { version = "1.52", default-features = false, features = [
+    "macros",
+    "rt",
+    "time",
+] }

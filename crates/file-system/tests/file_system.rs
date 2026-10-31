@@ -45,7 +45,7 @@ async fn synchronize(
 #[tokio::test]
 async fn residency_defaults_to_passthrough_and_uses_longest_prefix() {
     let root = root();
-    let file_system = FileSystem::open(&root, 7_u8).unwrap();
+    let file_system = FileSystem::open(&root, 7_u8).await.unwrap();
 
     assert_eq!(
         file_system.residency("notes/today.txt").unwrap(),
@@ -88,7 +88,7 @@ async fn residency_defaults_to_passthrough_and_uses_longest_prefix() {
 #[tokio::test]
 async fn passthrough_evicts_content_and_full_requires_materialization() {
     let root = root();
-    let file_system = FileSystem::open(&root, 7_u8).unwrap();
+    let file_system = FileSystem::open(&root, 7_u8).await.unwrap();
     full(&file_system).await;
     let entry = file_system.write("notes.txt", b"content").await.unwrap();
 
@@ -117,7 +117,7 @@ async fn passthrough_evicts_content_and_full_requires_materialization() {
 #[tokio::test]
 async fn passthrough_fetch_reports_no_peers() {
     let root = root();
-    let file_system = FileSystem::open(&root, 7_u8).unwrap();
+    let file_system = FileSystem::open(&root, 7_u8).await.unwrap();
     full(&file_system).await;
     file_system.write("notes.txt", b"content").await.unwrap();
     file_system
@@ -135,8 +135,8 @@ async fn passthrough_fetch_materializes_before_full_residency() {
     let left_root = root();
     let right_root = root();
     let network = MemoryNetwork::new(16);
-    let left = FileSystem::open(&left_root, 1_u8).unwrap();
-    let right = FileSystem::open(&right_root, 2_u8).unwrap();
+    let left = FileSystem::open(&left_root, 1_u8).await.unwrap();
+    let right = FileSystem::open(&right_root, 2_u8).await.unwrap();
     full(&left).await;
     left.write("notes.txt", b"content").await.unwrap();
     let left_transport = network.transport(1);
@@ -183,8 +183,8 @@ async fn metadata_sync_converges_tombstones_and_late_joiners() {
     let right_root = root();
     let late_root = root();
     let network = MemoryNetwork::new(16);
-    let left = FileSystem::open(&left_root, 1_u8).unwrap();
-    let right = FileSystem::open(&right_root, 2_u8).unwrap();
+    let left = FileSystem::open(&left_root, 1_u8).await.unwrap();
+    let right = FileSystem::open(&right_root, 2_u8).await.unwrap();
     let left_transport = network.transport(1);
     let right_transport = network.transport(2);
     full(&left).await;
@@ -207,7 +207,7 @@ async fn metadata_sync_converges_tombstones_and_late_joiners() {
         Err(file_system::Error::NotFound)
     ));
 
-    let late = FileSystem::open(&late_root, 3_u8).unwrap();
+    let late = FileSystem::open(&late_root, 3_u8).await.unwrap();
     let late_transport = network.transport(3);
     let mut late_sync = late.metadata_sync(late_transport);
     late_sync.announce().await.unwrap();
@@ -231,8 +231,8 @@ async fn syncs_content_and_rejects_stale_responses() {
     let left_root = root();
     let right_root = root();
     let network = MemoryNetwork::new(16);
-    let left = FileSystem::open(&left_root, 1_u8).unwrap();
-    let right = FileSystem::open(&right_root, 2_u8).unwrap();
+    let left = FileSystem::open(&left_root, 1_u8).await.unwrap();
+    let right = FileSystem::open(&right_root, 2_u8).await.unwrap();
     let left_transport = network.transport(1);
     let right_transport = network.transport(2);
     let right_sender = right_transport.clone();
@@ -291,8 +291,8 @@ async fn full_peer_serves_content_to_passthrough_peer() {
     let left_root = root();
     let right_root = root();
     let network = MemoryNetwork::new(16);
-    let left = FileSystem::open(&left_root, 1_u8).unwrap();
-    let right = FileSystem::open(&right_root, 2_u8).unwrap();
+    let left = FileSystem::open(&left_root, 1_u8).await.unwrap();
+    let right = FileSystem::open(&right_root, 2_u8).await.unwrap();
     full(&left).await;
     full(&right).await;
     left.write("file.txt", b"content").await.unwrap();
@@ -340,8 +340,8 @@ async fn cancelled_remote_read_can_be_retried() {
     let left_root = root();
     let right_root = root();
     let network = MemoryNetwork::new(16);
-    let left = FileSystem::open(&left_root, 1_u8).unwrap();
-    let right = FileSystem::open(&right_root, 2_u8).unwrap();
+    let left = FileSystem::open(&left_root, 1_u8).await.unwrap();
+    let right = FileSystem::open(&right_root, 2_u8).await.unwrap();
     full(&left).await;
     full(&right).await;
     left.write("file.txt", b"content").await.unwrap();
@@ -385,8 +385,8 @@ async fn reports_unavailable_requested_content() {
     let left_root = root();
     let right_root = root();
     let network = MemoryNetwork::new(16);
-    let left = FileSystem::open(&left_root, 1_u8).unwrap();
-    let right = FileSystem::open(&right_root, 2_u8).unwrap();
+    let left = FileSystem::open(&left_root, 1_u8).await.unwrap();
+    let right = FileSystem::open(&right_root, 2_u8).await.unwrap();
     let left_transport = network.transport(1);
     let right_transport = network.transport(2);
     let right_sender = right_transport.clone();
@@ -416,7 +416,7 @@ async fn reports_unavailable_requested_content() {
 #[tokio::test]
 async fn write_at_requires_current_revision_and_preserves_offset_semantics() {
     let root = root();
-    let file_system = FileSystem::open(&root, 7_u8).unwrap();
+    let file_system = FileSystem::open(&root, 7_u8).await.unwrap();
     full(&file_system).await;
     file_system.write("file.txt", b"hello").await.unwrap();
     let revision = file_system.revision("file.txt").await.unwrap();
@@ -441,7 +441,7 @@ async fn write_at_requires_current_revision_and_preserves_offset_semantics() {
 #[tokio::test]
 async fn local_file_handle_supports_offset_io_and_scans() {
     let root = root();
-    let file_system = FileSystem::open(&root, 7_u8).unwrap();
+    let file_system = FileSystem::open(&root, 7_u8).await.unwrap();
     full(&file_system).await;
     file_system.write("file.txt", b"hello").await.unwrap();
     file_system.write("other.txt", b"world").await.unwrap();
@@ -478,7 +478,7 @@ async fn local_file_handle_supports_offset_io_and_scans() {
 #[tokio::test]
 async fn scan_uses_valid_cursors_and_has_no_phantom_final_cursor() {
     let root = root();
-    let file_system = FileSystem::open(&root, 7_u8).unwrap();
+    let file_system = FileSystem::open(&root, 7_u8).await.unwrap();
     full(&file_system).await;
     for name in ["a", "b", "c"] {
         file_system.write(name, name.as_bytes()).await.unwrap();
@@ -502,7 +502,7 @@ async fn scan_uses_valid_cursors_and_has_no_phantom_final_cursor() {
 #[tokio::test]
 async fn supports_non_uuid_peer_ids() {
     let root = root();
-    let file_system = FileSystem::open(&root, 7_u8).unwrap();
+    let file_system = FileSystem::open(&root, 7_u8).await.unwrap();
 
     full(&file_system).await;
     let entry = file_system.write("file.txt", b"content").await.unwrap();
@@ -514,7 +514,7 @@ async fn supports_non_uuid_peer_ids() {
 #[tokio::test]
 async fn preserves_file_identity_across_overwrite_append_and_rename() {
     let root = root();
-    let file_system = FileSystem::open(&root, Uuid::now_v7()).unwrap();
+    let file_system = FileSystem::open(&root, Uuid::now_v7()).await.unwrap();
 
     full(&file_system).await;
     let created = file_system
@@ -555,7 +555,7 @@ async fn preserves_file_identity_across_overwrite_append_and_rename() {
 #[tokio::test]
 async fn directory_semantics_and_boundaries() {
     let root = root();
-    let file_system = FileSystem::open(&root, Uuid::now_v7()).unwrap();
+    let file_system = FileSystem::open(&root, Uuid::now_v7()).await.unwrap();
 
     full(&file_system).await;
     file_system.write("a/b.txt", b"b").await.unwrap();
@@ -618,7 +618,7 @@ async fn directory_semantics_and_boundaries() {
 #[tokio::test]
 async fn renames_directories_without_changing_identities() {
     let root = root();
-    let file_system = FileSystem::open(&root, Uuid::now_v7()).unwrap();
+    let file_system = FileSystem::open(&root, Uuid::now_v7()).await.unwrap();
     full(&file_system).await;
     let directory = file_system.create_dir("a").await.unwrap();
     let file = file_system.write("a/file.txt", b"content").await.unwrap();
@@ -659,7 +659,7 @@ async fn persists_metadata_content_and_directory_markers() {
     let root = root();
     let node_id = Uuid::now_v7();
     let file_id = {
-        let file_system = FileSystem::open(&root, node_id).unwrap();
+        let file_system = FileSystem::open(&root, node_id).await.unwrap();
         full(&file_system).await;
         file_system.create_dir("empty").await.unwrap();
         file_system
@@ -669,7 +669,7 @@ async fn persists_metadata_content_and_directory_markers() {
             .meta
             .file_id
     };
-    let file_system = FileSystem::open(&root, node_id).unwrap();
+    let file_system = FileSystem::open(&root, node_id).await.unwrap();
     full(&file_system).await;
 
     assert_eq!(
@@ -695,8 +695,8 @@ async fn reconnect_exchange_recovers_missed_updates_and_deletes() {
     let left_root = root();
     let right_root = root();
     let network = MemoryNetwork::new(16);
-    let left = FileSystem::open(&left_root, 1_u8).unwrap();
-    let right = FileSystem::open(&right_root, 2_u8).unwrap();
+    let left = FileSystem::open(&left_root, 1_u8).await.unwrap();
+    let right = FileSystem::open(&right_root, 2_u8).await.unwrap();
     full(&left).await;
     full(&right).await;
     left.write("keep.txt", b"initial").await.unwrap();
@@ -727,7 +727,7 @@ async fn reconnect_exchange_recovers_missed_updates_and_deletes() {
 #[tokio::test]
 async fn writes_produce_persistent_distinct_revisions() {
     let root = root();
-    let file_system = FileSystem::open(&root, 1_u8).unwrap();
+    let file_system = FileSystem::open(&root, 1_u8).await.unwrap();
     full(&file_system).await;
 
     let first = file_system.write("file.txt", b"one").await.unwrap();
@@ -735,7 +735,7 @@ async fn writes_produce_persistent_distinct_revisions() {
     assert_ne!(first.meta.revision, second.meta.revision);
     drop(file_system);
 
-    let reopened = FileSystem::open(&root, 1_u8).unwrap();
+    let reopened = FileSystem::open(&root, 1_u8).await.unwrap();
     assert_eq!(
         reopened.revision("file.txt").await.unwrap(),
         second.meta.revision
@@ -743,8 +743,8 @@ async fn writes_produce_persistent_distinct_revisions() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[test]
-fn rejects_unsupported_metadata_schema() {
+#[tokio::test]
+async fn rejects_unsupported_metadata_schema() {
     let root = root();
     fs::create_dir_all(&root).unwrap();
     let database = redb::Database::create(root.join("metadata.redb")).unwrap();
@@ -758,6 +758,7 @@ fn rejects_unsupported_metadata_schema() {
     let metadata_path = root.join("metadata.redb");
 
     let error = FileSystem::open(&root, 1_u8)
+        .await
         .err()
         .expect("unsupported metadata schema is rejected");
     assert!(
@@ -785,8 +786,8 @@ async fn sync_peer_continuously_converges_metadata() {
     let left_root = root();
     let right_root = root();
     let network = MemoryNetwork::new(16);
-    let left = Arc::new(FileSystem::open(&left_root, 1_u8).unwrap());
-    let right = Arc::new(FileSystem::open(&right_root, 2_u8).unwrap());
+    let left = Arc::new(FileSystem::open(&left_root, 1_u8).await.unwrap());
+    let right = Arc::new(FileSystem::open(&right_root, 2_u8).await.unwrap());
     full(&left).await;
     full(&right).await;
 

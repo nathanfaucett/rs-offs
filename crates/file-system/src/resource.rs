@@ -1,17 +1,19 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+#![cfg_attr(target_arch = "wasm32", allow(dead_code))] // browser construction lands with the browser backend
 
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
+
+#[cfg(not(target_arch = "wasm32"))]
+use ofdb_kv::Database;
+use ofdb_kv::{Client, Value};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{Error, FileSystem};
+use crate::Error;
 
-const CATALOG: TableDefinition<&[u8], &[u8]> = TableDefinition::new("filesystem_resources");
-const PROJECTED: TableDefinition<&[u8], u8> = TableDefinition::new("projected_filesystems");
+const CATALOG_PREFIX: &str = "catalog:";
+const PROJECTED_PREFIX: &str = "projected:";
+const CATALOG_TABLE: &str = "filesystem_catalog";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FileSystemId(Uuid);
@@ -34,6 +36,14 @@ impl FileSystemId {
     pub const fn as_uuid(self) -> Uuid {
         self.0
     }
+
+    fn key(&self) -> String {
+        format!("{}{}", CATALOG_PREFIX, self.0)
+    }
+
+    fn projected_key(&self) -> String {
+        format!("{}{}", PROJECTED_PREFIX, self.0)
+    }
 }
 
 impl Default for FileSystemId {
@@ -55,202 +65,185 @@ pub struct CatalogEntry {
 }
 
 pub struct FileSystemCatalog {
-    root: PathBuf,
-    database: Arc<Database>,
+    #[cfg(not(target_arch = "wasm32"))]
+    namespace_root: PathBuf,
+    client: Client,
 }
 
 impl FileSystemCatalog {
-    pub fn open(namespace_root: impl AsRef<Path>) -> Result<Self, Error> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open(namespace_root: impl AsRef<std::path::Path>) -> Result<Self, Error> {
         let root = namespace_root.as_ref().to_owned();
-        fs::create_dir_all(&root)?;
-        let path = root.join("filesystem-catalog.redb");
-        let existed = path.exists();
-        let database = if existed {
-            Database::open(path)
-        } else {
-            Database::create(path)
-        }
-        .map_err(metadata_error)?;
-        let transaction = database.begin_write().map_err(metadata_error)?;
-        transaction.open_table(CATALOG).map_err(metadata_error)?;
-        transaction.open_table(PROJECTED).map_err(metadata_error)?;
-        transaction.commit().map_err(metadata_error)?;
+        std::fs::create_dir_all(&root)?;
+        let database = Database::open_with_table(root.join("catalog.redb"), CATALOG_TABLE)
+            .map_err(metadata_error)?;
         Ok(Self {
-            root: root.join("filesystems"),
-            database: Arc::new(database),
+            namespace_root: root.join("filesystems"),
+            client: database.client(),
         })
     }
 
-    pub fn create(&self, name: Option<String>) -> Result<FileSystemResource, Error> {
+    pub async fn create(&self, name: Option<String>) -> Result<FileSystemResource, Error> {
         let resource = FileSystemResource {
             id: FileSystemId::new(),
             name,
         };
-        let transaction = self.database.begin_write().map_err(metadata_error)?;
-        {
-            let mut table = transaction.open_table(CATALOG).map_err(metadata_error)?;
-            table
-                .insert(
-                    resource.id.0.as_bytes().as_slice(),
-                    encode(&CatalogEntry {
-                        resource: resource.clone(),
-                        deleted: false,
-                    })?
-                    .as_slice(),
-                )
-                .map_err(metadata_error)?;
-        }
-        transaction.commit().map_err(metadata_error)?;
+        self.client
+            .set(
+                &resource.id.key(),
+                Value::Blob(encode(&CatalogEntry {
+                    resource: resource.clone(),
+                    deleted: false,
+                })?),
+                None,
+            )
+            .await
+            .map_err(metadata_error)?;
         Ok(resource)
     }
 
-    pub fn open_filesystem<PeerId>(
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn open_filesystem<PeerId>(
         &self,
         id: FileSystemId,
         node_id: PeerId,
-    ) -> Result<FileSystem<PeerId>, Error>
+    ) -> Result<crate::FileSystem<PeerId>, Error>
     where
         PeerId: Clone
             + std::fmt::Debug
             + Ord
             + Serialize
             + serde::de::DeserializeOwned
-            + Send
-            + Sync
+            + ofdb_platform::MaybeSend
+            + ofdb_platform::MaybeSync
             + 'static,
     {
-        if !self.list()?.iter().any(|resource| resource.id == id) {
+        if !self.list().await?.iter().any(|resource| resource.id == id) {
             return Err(Error::NotFound);
         }
-        FileSystem::open(self.root.join(id.0.to_string()), node_id)
+        crate::FileSystem::open(self.namespace_root.join(id.0.to_string()), node_id).await
     }
 
-    pub fn list(&self) -> Result<Vec<FileSystemResource>, Error> {
+    pub async fn list(&self) -> Result<Vec<FileSystemResource>, Error> {
         Ok(self
-            .snapshot()?
+            .snapshot()
+            .await?
             .into_iter()
             .filter(|entry| !entry.deleted)
             .map(|entry| entry.resource)
             .collect())
     }
 
-    pub fn delete(&self, id: FileSystemId) -> Result<(), Error> {
-        let transaction = self.database.begin_write().map_err(metadata_error)?;
-        {
-            let mut table = transaction.open_table(CATALOG).map_err(metadata_error)?;
-            let mut entry: CatalogEntry = table
-                .get(id.0.as_bytes().as_slice())
-                .map_err(metadata_error)?
-                .map(|value| postcard::from_bytes(value.value()).map_err(metadata_error))
-                .transpose()?
-                .ok_or(Error::NotFound)?;
-            if entry.deleted {
-                return Err(Error::NotFound);
-            }
-            entry.deleted = true;
-            table
-                .insert(id.0.as_bytes().as_slice(), encode(&entry)?.as_slice())
-                .map_err(metadata_error)?;
+    pub async fn delete(&self, id: FileSystemId) -> Result<(), Error> {
+        let mut transaction = self.client.transaction().await.map_err(metadata_error)?;
+        let mut entry: CatalogEntry = transaction
+            .get(&id.key())
+            .await
+            .map_err(metadata_error)?
+            .map(decode_value)
+            .transpose()?
+            .ok_or(Error::NotFound)?;
+        if entry.deleted {
+            return Err(Error::NotFound);
         }
-        transaction.commit().map_err(metadata_error)
+        entry.deleted = true;
+        transaction
+            .set(&id.key(), Value::Blob(encode(&entry)?), None)
+            .await
+            .map_err(metadata_error)?;
+        transaction.commit().await.map_err(metadata_error)
     }
 
-    pub fn mark_projected_selected(&self, id: FileSystemId) -> Result<bool, Error> {
-        let transaction = self.database.begin_write().map_err(metadata_error)?;
-        let mut projected = transaction.open_table(PROJECTED).map_err(metadata_error)?;
-        let key = id.0.as_bytes();
-        let exists = projected
-            .get(key.as_slice())
+    pub async fn mark_projected_selected(&self, id: FileSystemId) -> Result<bool, Error> {
+        let mut transaction = self.client.transaction().await.map_err(metadata_error)?;
+        let key = id.projected_key();
+        let exists = transaction
+            .get(&key)
+            .await
             .map_err(metadata_error)?
             .is_some();
         if exists {
-            projected
-                .insert(key.as_slice(), 1)
+            transaction
+                .set(&key, Value::Integer(1), None)
+                .await
                 .map_err(metadata_error)?;
         }
-        drop(projected);
-        transaction.commit().map_err(metadata_error)?;
+        transaction.commit().await.map_err(metadata_error)?;
         Ok(exists)
     }
 
-    pub fn mark_projected(&self, id: FileSystemId) -> Result<(), Error> {
-        let transaction = self.database.begin_write().map_err(metadata_error)?;
-        transaction
-            .open_table(PROJECTED)
-            .map_err(metadata_error)?
-            .insert(id.0.as_bytes().as_slice(), 1)
-            .map_err(metadata_error)?;
-        transaction.commit().map_err(metadata_error)
+    pub async fn mark_projected(&self, id: FileSystemId) -> Result<(), Error> {
+        self.client
+            .set(&id.projected_key(), Value::Integer(1), None)
+            .await
+            .map_err(metadata_error)
     }
 
-    pub fn projected_selected(&self) -> Result<Vec<FileSystemId>, Error> {
-        let transaction = self.database.begin_read().map_err(metadata_error)?;
-        let table = transaction.open_table(PROJECTED).map_err(metadata_error)?;
-        table
-            .iter()
+    pub async fn projected_selected(&self) -> Result<Vec<FileSystemId>, Error> {
+        self.client
+            .scan_prefix(PROJECTED_PREFIX)
+            .await
             .map_err(metadata_error)?
-            .filter_map(|entry| match entry {
-                Ok((key, value)) if value.value() == 1 => {
-                    let bytes = key.value();
-                    let Ok(bytes) = <[u8; 16]>::try_from(bytes) else {
-                        return Some(Err(Error::InvalidResourceId));
-                    };
-                    Some(Ok(FileSystemId(Uuid::from_bytes(bytes))))
-                }
-                Ok(_) => None,
-                Err(error) => Some(Err(metadata_error(error))),
-            })
+            .into_iter()
+            .filter(|(_, value)| value == &Value::Integer(1))
+            .map(|(key, _)| projected_id(&key))
             .collect()
     }
 
-    /// Permanently retires this device's managed copy without changing catalog identity or tombstones.
-    /// Cancellation or failure leaves the durable gate closed; call again to finish cleanup.
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Permanently retires this device's managed copy without changing catalog identity or
+    /// tombstones. Cancellation or failure leaves the durable gate closed; call again to
+    /// finish cleanup.
     pub async fn remove_managed_copy(&self, id: FileSystemId) -> Result<(), Error> {
-        if !self.snapshot()?.iter().any(|entry| entry.resource.id == id) {
+        if !self
+            .snapshot()
+            .await?
+            .iter()
+            .any(|entry| entry.resource.id == id)
+        {
             return Err(Error::NotFound);
         }
-        crate::managed_copy::ManagedCopy::remove(&self.root.join(id.0.to_string())).await?;
-        let transaction = self.database.begin_write().map_err(metadata_error)?;
+        crate::native::remove_root(&self.namespace_root.join(id.0.to_string())).await?;
+        let mut transaction = self.client.transaction().await.map_err(metadata_error)?;
+        let key = id.projected_key();
+        if transaction
+            .get(&key)
+            .await
+            .map_err(metadata_error)?
+            .is_some()
         {
-            let mut projected = transaction.open_table(PROJECTED).map_err(metadata_error)?;
-            if projected
-                .get(id.0.as_bytes().as_slice())
-                .map_err(metadata_error)?
-                .is_some()
-            {
-                projected
-                    .insert(id.0.as_bytes().as_slice(), 0)
-                    .map_err(metadata_error)?;
-            }
+            transaction
+                .set(&key, Value::Integer(0), None)
+                .await
+                .map_err(metadata_error)?;
         }
-        transaction.commit().map_err(metadata_error)
+        transaction.commit().await.map_err(metadata_error)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Retires a selected projection using the same owner lifecycle as created copies.
     pub async fn evict_projected_copy(&self, id: FileSystemId) -> Result<bool, Error> {
-        if !self.projected_selected()?.contains(&id) {
+        if !self.projected_selected().await?.contains(&id) {
             return Ok(false);
         }
         self.remove_managed_copy(id).await?;
         Ok(true)
     }
 
-    pub fn snapshot(&self) -> Result<Vec<CatalogEntry>, Error> {
-        let transaction = self.database.begin_read().map_err(metadata_error)?;
-        let table = transaction.open_table(CATALOG).map_err(metadata_error)?;
-        table
-            .iter()
+    pub async fn snapshot(&self) -> Result<Vec<CatalogEntry>, Error> {
+        self.client
+            .scan_prefix(CATALOG_PREFIX)
+            .await
             .map_err(metadata_error)?
-            .map(|entry| {
-                let (_, value) = entry.map_err(metadata_error)?;
-                postcard::from_bytes(value.value()).map_err(metadata_error)
-            })
+            .into_iter()
+            .map(|(_, value)| decode_value(value))
             .collect()
     }
 
-    pub fn apply_tombstone(&self, id: FileSystemId) -> Result<(), Error> {
+    pub async fn apply_tombstone(&self, id: FileSystemId) -> Result<(), Error> {
         let existing = self
-            .snapshot()?
+            .snapshot()
+            .await?
             .into_iter()
             .find(|entry| entry.resource.id == id);
         let resource = existing
@@ -260,43 +253,56 @@ impl FileSystemCatalog {
             resource,
             deleted: true,
         }])
+        .await
     }
 
-    pub fn import_snapshot(&self, entries: &[CatalogEntry]) -> Result<(), Error> {
+    pub async fn import_snapshot(&self, entries: &[CatalogEntry]) -> Result<(), Error> {
         if entries
             .iter()
             .any(|entry| entry.resource.id.0.get_version_num() != 7)
         {
             return Err(Error::InvalidResourceId);
         }
-        let transaction = self.database.begin_write().map_err(metadata_error)?;
-        {
-            let mut table = transaction.open_table(CATALOG).map_err(metadata_error)?;
-            for incoming in entries {
-                let key = incoming.resource.id.0.as_bytes();
-                let existing = table
-                    .get(key.as_slice())
-                    .map_err(metadata_error)?
-                    .map(|value| {
-                        postcard::from_bytes::<CatalogEntry>(value.value()).map_err(metadata_error)
-                    })
-                    .transpose()?;
-                let merged = match existing {
-                    Some(current) if current.deleted => current,
-                    Some(_) if !incoming.deleted => continue,
-                    _ => incoming.clone(),
-                };
-                table
-                    .insert(key.as_slice(), encode(&merged)?.as_slice())
-                    .map_err(metadata_error)?;
-            }
+        let mut transaction = self.client.transaction().await.map_err(metadata_error)?;
+        for incoming in entries {
+            let key = incoming.resource.id.key();
+            let existing = transaction
+                .get(&key)
+                .await
+                .map_err(metadata_error)?
+                .map(decode_value)
+                .transpose()?;
+            let merged = match existing {
+                Some(current) if current.deleted => current,
+                Some(_) if !incoming.deleted => continue,
+                _ => incoming.clone(),
+            };
+            transaction
+                .set(&key, Value::Blob(encode(&merged)?), None)
+                .await
+                .map_err(metadata_error)?;
         }
-        transaction.commit().map_err(metadata_error)
+        transaction.commit().await.map_err(metadata_error)
     }
 }
 
 fn encode(entry: &CatalogEntry) -> Result<Vec<u8>, Error> {
     postcard::to_allocvec(entry).map_err(metadata_error)
+}
+
+fn decode_value(value: Value) -> Result<CatalogEntry, Error> {
+    let Value::Blob(bytes) = value else {
+        return Err(metadata_error("catalog value is not a blob"));
+    };
+    postcard::from_bytes(&bytes).map_err(metadata_error)
+}
+
+fn projected_id(key: &str) -> Result<FileSystemId, Error> {
+    let id = key
+        .strip_prefix(PROJECTED_PREFIX)
+        .and_then(|rest| Uuid::parse_str(rest).ok())
+        .ok_or(Error::InvalidResourceId)?;
+    Ok(FileSystemId(id))
 }
 
 fn metadata_error(error: impl std::fmt::Display) -> Error {

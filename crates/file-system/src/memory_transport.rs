@@ -7,6 +7,8 @@ use std::{
 use bytes::Bytes;
 use tokio::sync::{broadcast, mpsc};
 
+use ofdb_platform::{MaybeSend, MaybeSync};
+
 use crate::{
     FileHandle, FileHandleId, FileOperation, FileResponse, FileServiceError, FileSessionService,
     IncomingMessage, OpenRequest, ScanPage, SessionRequest, SyncMessage, Transport,
@@ -95,7 +97,7 @@ impl<PeerId: Clone> Clone for MemoryTransport<PeerId> {
 
 impl<PeerId> Transport<PeerId> for MemoryTransport<PeerId>
 where
-    PeerId: Clone + Ord + Send + Sync + 'static,
+    PeerId: Clone + Ord + MaybeSend + MaybeSync + 'static,
 {
     type Error = MemoryTransportError;
     fn peers(&self) -> Vec<PeerId> {
@@ -153,7 +155,7 @@ where
 
 impl<PeerId> FileSessionService<PeerId> for MemoryTransport<PeerId>
 where
-    PeerId: Clone + Ord + Send + Sync + 'static,
+    PeerId: Clone + Ord + MaybeSend + MaybeSync + 'static,
 {
     type Handle = MemoryFileHandle<PeerId>;
     async fn open(&self, peer: PeerId, request: OpenRequest) -> Result<Self::Handle, Self::Error> {
@@ -198,7 +200,7 @@ where
 
 impl<PeerId> MemoryTransport<PeerId>
 where
-    PeerId: Clone + Ord + Send + Sync + 'static,
+    PeerId: Clone + Ord + MaybeSend + MaybeSync + 'static,
 {
     fn start_request(
         &self,
@@ -273,7 +275,7 @@ pub struct MemoryFileHandle<PeerId> {
 }
 impl<PeerId> FileHandle<PeerId> for MemoryFileHandle<PeerId>
 where
-    PeerId: Clone + Ord + Send + Sync + 'static,
+    PeerId: Clone + Ord + MaybeSend + MaybeSync + 'static,
 {
     type Error = MemoryTransportError;
     fn read<'a>(

@@ -4,6 +4,8 @@ use ofdb_kv::KvSnapshot;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::sync::broadcast;
 
+use ofdb_platform::{MaybeSend, MaybeSync};
+
 use crate::{
     Error, FileHandle, FileHandleId, FileOperation, FileResponse, FileServiceError,
     FileSessionService, FileSystem, IncomingMessage, MAX_FILE_READ_LENGTH, OpenRequest,
@@ -18,8 +20,8 @@ pub enum SyncMessage<PeerId> {
 
 pub struct MetadataSync<'a, PeerId, T>
 where
-    PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + Send + Sync + 'static,
-    T: FileSessionService<PeerId> + Sync + Clone + Send + 'static,
+    PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static,
+    T: FileSessionService<PeerId> + MaybeSync + Clone + MaybeSend + 'static,
 {
     file_system: &'a FileSystem<PeerId>,
     transport: T,
@@ -33,11 +35,11 @@ where
 
 impl<PeerId> FileSystem<PeerId>
 where
-    PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + Send + Sync + 'static,
+    PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static,
 {
     pub fn metadata_sync<T>(&self, transport: T) -> MetadataSync<'_, PeerId, T>
     where
-        T: FileSessionService<PeerId> + Sync + Clone + Send + 'static,
+        T: FileSessionService<PeerId> + MaybeSync + Clone + MaybeSend + 'static,
     {
         MetadataSync {
             incoming: transport.subscribe(),
@@ -53,7 +55,7 @@ where
 
     pub async fn sync_peer<T>(&self, transport: T) -> Result<(), Error>
     where
-        T: FileSessionService<PeerId> + Sync + Clone + Send + 'static,
+        T: FileSessionService<PeerId> + MaybeSync + Clone + MaybeSend + 'static,
     {
         self.metadata_sync(transport).run().await
     }
@@ -61,8 +63,8 @@ where
 
 impl<PeerId, T> MetadataSync<'_, PeerId, T>
 where
-    PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + Send + Sync + 'static,
-    T: FileSessionService<PeerId> + Sync + Clone + Send + 'static,
+    PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static,
+    T: FileSessionService<PeerId> + MaybeSync + Clone + MaybeSend + 'static,
 {
     async fn wait<F: Future>(&self, future: F) -> Result<F::Output, Error> {
         self.file_system
@@ -499,7 +501,9 @@ mod tests {
     #[tokio::test]
     async fn rejects_oversized_file_read_before_allocating() {
         let root = std::env::temp_dir().join(format!("file-system-{}", uuid::Uuid::now_v7()));
-        let file_system = FileSystem::open(&root, 1_u8).expect("file system should open");
+        let file_system = FileSystem::open(&root, 1_u8)
+            .await
+            .expect("file system should open");
         file_system
             .set_residency("", Residency::Full)
             .await
@@ -557,7 +561,9 @@ mod tests {
     #[tokio::test]
     async fn file_handles_are_scoped_to_requesting_peer() {
         let root = std::env::temp_dir().join(format!("file-system-{}", uuid::Uuid::now_v7()));
-        let file_system = FileSystem::open(&root, 1_u8).expect("file system should open");
+        let file_system = FileSystem::open(&root, 1_u8)
+            .await
+            .expect("file system should open");
         file_system
             .set_residency("", Residency::Full)
             .await

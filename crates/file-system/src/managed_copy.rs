@@ -1,131 +1,107 @@
-use std::{
-    collections::BTreeMap,
-    fs::{self, File, OpenOptions},
-    future::Future,
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock, Weak},
-};
+#![cfg_attr(target_arch = "wasm32", allow(dead_code))] // browser construction lands with the browser backend
+
+use std::{collections::BTreeMap, future::Future, sync::Arc, sync::Weak};
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::{Mutex, OnceLock};
+
+#[cfg(target_arch = "wasm32")]
+use std::cell::RefCell;
 
 use ofdb_kv::{Client, Database};
-use tokio::sync::{RwLock, RwLockReadGuard, watch};
+use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard, watch};
 
-use crate::Error;
+use crate::{Error, content::ContentObject, root::RootObject};
 
-pub(crate) struct NativeCopy {
-    pub(crate) content_root: PathBuf,
-    pub(crate) database: Database,
-    pub(crate) metadata: Client,
-    _lease: File,
+pub(crate) struct Storage {
+    pub(crate) metadata: Database,
+    pub(crate) client: Client,
+    pub(crate) content: Arc<dyn ContentObject>,
 }
 
 pub(crate) struct ManagedCopy {
-    root: PathBuf,
-    marker: PathBuf,
-    lease: PathBuf,
     retired: watch::Sender<bool>,
-    native: RwLock<Option<NativeCopy>>,
+    root: RwLock<Box<dyn RootObject>>,
+    storage: RwLock<Option<Storage>>,
     pub(crate) execution: tokio::sync::Mutex<()>,
-    streams: Mutex<Vec<Weak<Mutex<Option<File>>>>>,
 }
 
-type Copies = BTreeMap<PathBuf, Weak<ManagedCopy>>;
+type Copies = BTreeMap<String, Weak<ManagedCopy>>;
+
+#[cfg(not(target_arch = "wasm32"))]
 static COPIES: OnceLock<Mutex<Copies>> = OnceLock::new();
 
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static COPIES: RefCell<Copies> = const { RefCell::new(BTreeMap::new()) };
+}
+
 impl ManagedCopy {
-    fn locate(root: &Path) -> Result<Arc<Self>, Error> {
-        let root = std::path::absolute(root)?;
-        let parent = root.parent().ok_or(Error::InvalidPath)?;
-        fs::create_dir_all(parent)?;
-        let root = parent
-            .canonicalize()?
-            .join(root.file_name().ok_or(Error::InvalidPath)?);
-        if fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-            return Err(Error::InvalidPath);
-        }
-        let mut copies = COPIES
-            .get_or_init(Mutex::default)
-            .lock()
-            .expect("copy registry lock");
-        copies.retain(|_, copy| copy.strong_count() != 0);
-        if let Some(copy) = copies.get(&root).and_then(Weak::upgrade) {
-            return Ok(copy);
-        }
-        let marker = root.with_file_name(format!(
-            ".{}.retired",
-            root.file_name().expect("root name").to_string_lossy()
-        ));
-        let copy = Arc::new(Self {
-            retired: watch::channel(marker.try_exists()?).0,
-            lease: marker.with_extension("lease"),
-            marker,
-            root: root.clone(),
-            native: RwLock::new(None),
-            execution: tokio::sync::Mutex::new(()),
-            streams: Mutex::new(Vec::new()),
-        });
-        copies.insert(root, Arc::downgrade(&copy));
-        Ok(copy)
-    }
-
-    pub(crate) fn open(root: &Path) -> Result<Arc<Self>, Error> {
-        let copy = Self::locate(root)?;
-        copy.check()?;
-        if copy.native.try_read().is_ok_and(|native| native.is_some()) {
-            return Ok(copy);
-        }
-        let mut native = copy.native.try_write().map_err(|_| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::WouldBlock,
-                "filesystem is busy",
-            ))
-        })?;
-        copy.check()?;
-        if native.is_none() {
-            let lease = copy.lock_native()?;
-            copy.check()?;
-            fs::create_dir_all(&copy.root)?;
-            let content_root = copy.root.join(".data");
-            fs::create_dir_all(&content_root)?;
-            let database = Database::open_with_table(copy.root.join("metadata.redb"), "metadata")
-                .map_err(|error| Error::Metadata(error.to_string()))?;
-            let metadata = database.client();
-            *native = Some(NativeCopy {
-                content_root,
-                database,
-                metadata,
-                _lease: lease,
+    /// Returns the shared managed copy for `key`, creating it with `build` when absent.
+    pub(crate) fn shared(
+        key: String,
+        build: impl FnOnce(&str) -> Result<Box<dyn RootObject>, Error>,
+    ) -> Result<Arc<Self>, Error> {
+        registry(|copies| {
+            copies.retain(|_, copy| copy.strong_count() != 0);
+            if let Some(copy) = copies.get(&key).and_then(Weak::upgrade) {
+                return Ok(copy);
+            }
+            let root = build(&key)?;
+            let copy = Arc::new(Self {
+                retired: watch::channel(false).0,
+                root: RwLock::new(root),
+                storage: RwLock::new(None),
+                execution: tokio::sync::Mutex::new(()),
             });
-        }
-        drop(native);
-        Ok(copy)
-    }
-
-    fn lock_native(&self) -> Result<File, Error> {
-        let lease = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&self.lease)?;
-        lease.try_lock().map_err(std::io::Error::from)?;
-        Ok(lease)
+            copies.insert(key, Arc::downgrade(&copy));
+            Ok(copy)
+        })
     }
 
     pub(crate) fn check(&self) -> Result<(), Error> {
-        if *self.retired.borrow() || self.marker.try_exists()? {
+        if *self.retired.borrow() {
             Err(Error::PermissionDenied)
         } else {
             Ok(())
         }
     }
 
-    pub(crate) async fn admit(&self) -> Result<RwLockReadGuard<'_, Option<NativeCopy>>, Error> {
-        let native = self.wait(self.native.read()).await?;
+    pub(crate) fn storage_is_open(&self) -> bool {
+        self.storage
+            .try_read()
+            .is_ok_and(|storage| storage.is_some())
+    }
+
+    pub(crate) fn try_root(&self) -> Result<RwLockWriteGuard<'_, Box<dyn RootObject>>, Error> {
+        self.root.try_write().map_err(|_| busy())
+    }
+
+    pub(crate) fn try_storage(&self) -> Result<RwLockWriteGuard<'_, Option<Storage>>, Error> {
+        self.storage.try_write().map_err(|_| busy())
+    }
+
+    /// Observes the durable retirement record.
+    pub(crate) async fn observe_retirement(&self) -> Result<(), Error> {
+        if self.root.read().await.retired().await? {
+            self.retired.send_replace(true);
+        }
+        Ok(())
+    }
+
+    /// Observes the durable retirement record and fails when the root was retired.
+    pub(crate) async fn refresh(&self) -> Result<(), Error> {
+        self.observe_retirement().await?;
+        self.check()
+    }
+
+    pub(crate) async fn admit(&self) -> Result<RwLockReadGuard<'_, Option<Storage>>, Error> {
+        let storage = self.wait(self.storage.read()).await?;
         self.check()?;
-        if native.is_none() {
+        if storage.is_none() {
             return Err(Error::PermissionDenied);
         }
-        Ok(native)
+        Ok(storage)
     }
 
     pub(crate) async fn retired(&self) {
@@ -142,42 +118,31 @@ impl ManagedCopy {
         }
     }
 
-    pub(crate) fn register_stream(&self, file: &Arc<Mutex<Option<File>>>) {
-        let mut streams = self.streams.lock().expect("stream registry lock");
-        streams.retain(|stream| stream.strong_count() != 0);
-        streams.push(Arc::downgrade(file));
+    pub(crate) async fn remove(&self) -> Result<(), Error> {
+        self.root.read().await.retire().await?;
+        self.retired.send_replace(true);
+        *self.storage.write().await = None;
+        self.root.write().await.remove().await
     }
+}
 
-    pub(crate) async fn remove(root: &Path) -> Result<(), Error> {
-        let copy = Self::locate(root)?;
-        {
-            let marker = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&copy.marker)?;
-            marker.sync_all()?;
-            File::open(copy.marker.parent().expect("marker parent"))?.sync_all()?;
-            copy.retired.send_replace(true);
-        }
-        let mut native = copy.native.write().await;
-        for stream in copy
-            .streams
-            .lock()
-            .expect("stream registry lock")
-            .drain(..)
-            .filter_map(|stream| stream.upgrade())
-        {
-            stream.lock().expect("stream file lock").take();
-        }
-        drop(native.take());
-        let _lease = copy.lock_native()?;
-        match fs::remove_dir_all(&copy.root) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        File::open(copy.root.parent().expect("copy parent"))?.sync_all()?;
-        Ok(())
-    }
+fn busy() -> Error {
+    Error::Io(std::io::Error::new(
+        std::io::ErrorKind::WouldBlock,
+        "filesystem is busy",
+    ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn registry<R>(apply: impl FnOnce(&mut Copies) -> R) -> R {
+    let mut copies = COPIES
+        .get_or_init(Mutex::default)
+        .lock()
+        .expect("copy registry lock");
+    apply(&mut copies)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn registry<R>(apply: impl FnOnce(&mut Copies) -> R) -> R {
+    COPIES.with(|copies| apply(&mut copies.borrow_mut()))
 }

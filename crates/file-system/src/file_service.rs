@@ -1,8 +1,8 @@
 use bytes::{Bytes, BytesMut};
-use core::{future::Future, pin::Pin};
-
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use ofdb_platform::{BoxFuture, MaybeSend, MaybeSync};
 
 use crate::{Entry, Error, FileKind, FileSystem};
 use futures_util::StreamExt;
@@ -86,7 +86,7 @@ pub enum FileServiceError {
     Io,
 }
 
-pub type FileFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+pub type FileFuture<'a, T> = BoxFuture<'a, T>;
 
 pub struct LocalFileHandle<'a, PeerId>
 where
@@ -125,15 +125,14 @@ where
         length: u32,
     ) -> Result<Bytes, Error>
     where
-        PeerId: Send + Sync,
+        PeerId: MaybeSend + MaybeSync,
     {
         if self.kind == FileKind::Directory {
             return Err(Error::IsDirectory);
         }
         let mut stream = access
-            .stream_revision(&self.path, Some(self.revision), 64 * 1024)
+            .stream_revision(&self.path, Some(self.revision), 64 * 1024, true)
             .await?;
-        stream.admitted = true;
         let mut remaining = offset;
         let mut output = BytesMut::with_capacity(length as usize);
         while let Some(chunk) = stream.next().await {
@@ -159,7 +158,7 @@ where
     }
 }
 
-pub trait FileHandle<PeerId>: Send + Sync {
+pub trait FileHandle<PeerId>: MaybeSend + MaybeSync {
     type Error: std::error::Error + 'static;
 
     fn read<'a>(
@@ -190,8 +189,8 @@ where
         + Ord
         + serde::Serialize
         + serde::de::DeserializeOwned
-        + Send
-        + Sync
+        + MaybeSend
+        + MaybeSync
         + 'static,
 {
     type Error = Error;

@@ -1,27 +1,29 @@
 use std::{
     fmt::Debug,
-    fs::{self, File},
-    io::{Seek, SeekFrom, Write},
-    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
 use bytes::Bytes;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-
-use ofdb_kv::{Client, Database, JsonValue, Value};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+use ofdb_kv::{Client, Database, JsonValue, Value};
+use ofdb_platform::{MaybeSend, MaybeSync};
+
 use crate::{
-    Error, FileKind, FileMeta, OperationControl, ReadStream, RemoteOperation, Residency,
+    Error, FileKind, FileMeta, OperationControl, RemoteOperation, Residency,
+    content::ContentObject,
     file_service::{ScanPage, scan_page},
-    managed_copy::{ManagedCopy, NativeCopy},
+    managed_copy::ManagedCopy,
     path::{directory, file},
     residency::ResidencyRules,
-    staged_content::StagedContent,
+    stream::ReadStream,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+use crate::native;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound(deserialize = "PeerId: Ord + Deserialize<'de>"))]
@@ -46,10 +48,11 @@ where
 
 impl<PeerId> FileSystem<PeerId>
 where
-    PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + Send + Sync + 'static,
+    PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static,
 {
-    pub fn open(root: impl AsRef<Path>, node_id: PeerId) -> Result<Self, Error> {
-        let owner = ManagedCopy::open(root.as_ref())?;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn open(root: impl AsRef<std::path::Path>, node_id: PeerId) -> Result<Self, Error> {
+        let owner = native::open(root.as_ref()).await?;
         let changes = broadcast::channel(16).0;
 
         Ok(Self {
@@ -90,9 +93,10 @@ where
     }
 
     pub(crate) async fn access(&self) -> Result<FileSystemAccess<'_, PeerId>, Error> {
+        self.owner.refresh().await?;
         Ok(FileSystemAccess {
             file_system: self,
-            native: self.owner.admit().await?,
+            storage: self.owner.admit().await?,
         })
     }
     pub async fn set_residency(&self, path: &str, residency: Residency) -> Result<(), Error> {
@@ -178,7 +182,7 @@ where
     PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + 'static,
 {
     file_system: &'a FileSystem<PeerId>,
-    native: tokio::sync::RwLockReadGuard<'a, Option<NativeCopy>>,
+    storage: tokio::sync::RwLockReadGuard<'a, Option<crate::managed_copy::Storage>>,
 }
 
 impl<PeerId> core::ops::Deref for FileSystemAccess<'_, PeerId>
@@ -193,20 +197,19 @@ where
 
 impl<'a, PeerId> FileSystemAccess<'a, PeerId>
 where
-    PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + Send + Sync + 'static,
+    PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + MaybeSend + MaybeSync + 'static,
 {
+    fn storage(&self) -> &crate::managed_copy::Storage {
+        self.storage.as_ref().expect("admitted storage")
+    }
     pub(crate) fn database(&self) -> &Database {
-        &self.native.as_ref().expect("admitted native copy").database
+        &self.storage().metadata
     }
     fn metadata(&self) -> &Client {
-        &self.native.as_ref().expect("admitted native copy").metadata
+        &self.storage().client
     }
-    fn content_root(&self) -> &PathBuf {
-        &self
-            .native
-            .as_ref()
-            .expect("admitted native copy")
-            .content_root
+    fn content_store(&self) -> &Arc<dyn ContentObject> {
+        &self.storage().content
     }
     pub(crate) fn residency(&self, path: &str) -> Result<Residency, Error> {
         self.file_system
@@ -271,17 +274,13 @@ where
         if entry.meta.kind == FileKind::Directory {
             return Err(Error::IsDirectory);
         }
-        fs::read(self.content_path(entry.meta.file_id, entry.meta.revision)).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                Error::ContentUnavailable
-            } else {
-                Error::Io(error)
-            }
-        })
+        self.content_store()
+            .read(entry.meta.file_id, entry.meta.revision)
+            .await
     }
 
     pub async fn stream(&self, path: &str, chunk_size: usize) -> Result<ReadStream, Error> {
-        self.stream_revision(path, None, chunk_size).await
+        self.stream_revision(path, None, chunk_size, false).await
     }
 
     pub(crate) async fn stream_revision(
@@ -289,6 +288,7 @@ where
         path: &str,
         expected_revision: Option<Uuid>,
         chunk_size: usize,
+        admitted: bool,
     ) -> Result<ReadStream, Error> {
         let _execution = self.owner.execution.lock().await;
         let entry = self.entry(path).await?;
@@ -299,9 +299,12 @@ where
             return Err(Error::IsDirectory);
         }
         ReadStream::new(
-            File::open(self.content_path(entry.meta.file_id, entry.meta.revision))?,
+            Arc::clone(self.content_store()),
+            entry.meta.file_id,
+            entry.meta.revision,
             chunk_size,
             Arc::clone(&self.owner),
+            admitted,
         )
     }
 
@@ -316,10 +319,10 @@ where
             None => FileMeta::file(Uuid::now_v7(), self.node_id.clone()),
         };
         meta.revision = Uuid::now_v7();
-        let mut stage = StagedContent::new(self.content_path(meta.file_id, meta.revision))?;
-        self.stage_write(&mut stage, content)?;
-        self.stage_sync(&stage)?;
-        self.stage_publish(&mut stage)?;
+        let mut stage = self.stage(meta.file_id, meta.revision).await?;
+        self.stage_write(&mut *stage, content).await?;
+        self.stage_sync(&mut *stage).await?;
+        self.stage_publish(&mut *stage).await?;
         self.put(path, meta.clone()).await?;
         stage.commit();
         Ok(Entry {
@@ -362,15 +365,13 @@ where
                 "write is too large",
             ))
         })?;
-        let previous = self.content_path(entry.meta.file_id, entry.meta.revision);
-        let mut meta = entry.meta;
+        let mut meta = entry.meta.clone();
         meta.revision = Uuid::now_v7();
-        let mut stage = StagedContent::new(self.content_path(meta.file_id, meta.revision))?;
-        stage.copy_from(&previous)?;
-        stage.file.seek(SeekFrom::Start(offset))?;
-        self.stage_write(&mut stage, &data)?;
-        self.stage_sync(&stage)?;
-        self.stage_publish(&mut stage)?;
+        let mut stage = self.stage(meta.file_id, meta.revision).await?;
+        stage.copy_from(meta.file_id, entry.meta.revision).await?;
+        self.stage_write_at(&mut *stage, offset, &data).await?;
+        self.stage_sync(&mut *stage).await?;
+        self.stage_publish(&mut *stage).await?;
         self.put(path, meta).await?;
         stage.commit();
         Ok(length)
@@ -384,15 +385,13 @@ where
         if entry.meta.kind == FileKind::Directory {
             return Err(Error::IsDirectory);
         }
-        let previous = self.content_path(entry.meta.file_id, entry.meta.revision);
-        let mut meta = entry.meta;
+        let mut meta = entry.meta.clone();
         meta.revision = Uuid::now_v7();
-        let mut stage = StagedContent::new(self.content_path(meta.file_id, meta.revision))?;
-        stage.copy_from(&previous)?;
-        stage.file.seek(SeekFrom::End(0))?;
-        self.stage_write(&mut stage, content)?;
-        self.stage_sync(&stage)?;
-        self.stage_publish(&mut stage)?;
+        let mut stage = self.stage(meta.file_id, meta.revision).await?;
+        stage.copy_from(meta.file_id, entry.meta.revision).await?;
+        self.stage_write_end(&mut *stage, content).await?;
+        self.stage_sync(&mut *stage).await?;
+        self.stage_publish(&mut *stage).await?;
         self.put(path, meta).await?;
         stage.commit();
         Ok(())
@@ -503,14 +502,19 @@ where
             .map_err(metadata_error)?;
         let mut prepared = Vec::new();
         for (_, destination, meta) in &moves {
-            let previous = self.content_path(meta.file_id, meta.revision);
+            let source_revision = meta.revision;
             let mut meta = meta.clone();
             meta.revision = Uuid::now_v7();
-            if meta.kind == FileKind::File && previous.is_file() {
-                let mut stage = StagedContent::new(self.content_path(meta.file_id, meta.revision))?;
-                stage.copy_from(&previous)?;
-                self.stage_sync(&stage)?;
-                self.stage_publish(&mut stage)?;
+            if meta.kind == FileKind::File
+                && self
+                    .content_store()
+                    .has(meta.file_id, source_revision)
+                    .await?
+            {
+                let mut stage = self.stage(meta.file_id, meta.revision).await?;
+                stage.copy_from(meta.file_id, source_revision).await?;
+                self.stage_sync(&mut *stage).await?;
+                self.stage_publish(&mut *stage).await?;
                 prepared.push(stage);
             }
             transaction
@@ -528,7 +532,7 @@ where
             transaction.delete(&source).await.map_err(metadata_error)?;
         }
         transaction.commit().await.map_err(metadata_error)?;
-        for stage in prepared {
+        for mut stage in prepared {
             stage.commit();
         }
         let _ = self.changes.send(());
@@ -545,7 +549,10 @@ where
         for (entry_path, meta) in self.all_metadata().await? {
             if within(path, &entry_path)
                 && meta.kind == FileKind::File
-                && !self.content_path(meta.file_id, meta.revision).is_file()
+                && !self
+                    .content_store()
+                    .has(meta.file_id, meta.revision)
+                    .await?
             {
                 return Err(Error::ContentUnavailable);
             }
@@ -564,12 +571,8 @@ where
                         && other.file_id == file_id
                         && matches!(self.residency(other_path), Ok(Residency::Full))
                 });
-                if !retained
-                    && let Err(error) =
-                        fs::remove_dir_all(self.content_root().join(file_id.to_string()))
-                    && error.kind() != std::io::ErrorKind::NotFound
-                {
-                    return Err(error.into());
+                if !retained {
+                    self.content_store().remove(file_id).await?;
                 }
             }
         }
@@ -599,12 +602,6 @@ where
         Ok(())
     }
 
-    fn content_path(&self, file_id: Uuid, revision: Uuid) -> PathBuf {
-        self.content_root()
-            .join(file_id.to_string())
-            .join(revision.to_string())
-    }
-
     pub async fn revision(&self, path: &str) -> Result<Uuid, Error> {
         self.get(path)
             .await?
@@ -616,15 +613,7 @@ where
         if !self.has_revision(file_id, revision).await? {
             return Err(Error::ContentUnavailable);
         }
-
-        let content = fs::read(self.content_path(file_id, revision)).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                Error::ContentUnavailable
-            } else {
-                Error::Io(error)
-            }
-        })?;
-        Ok(content)
+        self.content_store().read(file_id, revision).await
     }
 
     pub(crate) async fn store_content<S>(
@@ -645,13 +634,12 @@ where
         {
             return Err(Error::StaleRevision);
         }
-        let path = self.content_path(file_id, revision);
-        let mut stage = StagedContent::new(path.clone())?;
+        let mut stage = self.stage(file_id, revision).await?;
         futures_util::pin_mut!(stream);
         while let Some(chunk) = self.owner.wait(control.wait(stream.next())).await?? {
-            self.stage_write(&mut stage, &chunk?)?;
+            self.stage_write(&mut *stage, &chunk?).await?;
         }
-        self.stage_sync(&stage)?;
+        self.stage_sync(&mut *stage).await?;
         let _execution = self
             .owner
             .wait(control.wait(self.owner.execution.lock()))
@@ -663,38 +651,65 @@ where
             .wait(control.admit(peer, RemoteOperation::PublishContent { file_id, revision }))
             .await??;
         self.owner.check()?;
-        if !path.is_file() {
-            self.stage_publish(&mut stage)?;
+        if !self.content_store().has(file_id, revision).await? {
+            self.stage_publish(&mut *stage).await?;
             stage.commit();
         }
         Ok(())
     }
 
-    fn stage_write(&self, stage: &mut StagedContent, bytes: &[u8]) -> Result<(), Error> {
-        #[cfg(test)]
-        {
-            if *self.content_fault.lock().expect("content fault lock")
-                == Some(crate::staged_content::ContentStep::Write)
-            {
-                stage.file.write_all(&bytes[..bytes.len() / 2])?;
-            }
-            self.content_checkpoint(crate::staged_content::ContentStep::Write)?;
-        }
-        stage.file.write_all(bytes)?;
-        Ok(())
+    async fn stage(
+        &self,
+        file_id: Uuid,
+        revision: Uuid,
+    ) -> Result<Box<dyn crate::content::StagedObject>, Error> {
+        self.content_store().stage(file_id, revision).await
     }
 
-    fn stage_sync(&self, stage: &StagedContent) -> Result<(), Error> {
+    async fn stage_write(
+        &self,
+        stage: &mut dyn crate::content::StagedObject,
+        bytes: &[u8],
+    ) -> Result<(), Error> {
+        #[cfg(test)]
+        self.content_checkpoint(crate::staged_content::ContentStep::Write)?;
+        stage.write(bytes).await
+    }
+
+    async fn stage_write_at(
+        &self,
+        stage: &mut dyn crate::content::StagedObject,
+        offset: u64,
+        bytes: &[u8],
+    ) -> Result<(), Error> {
+        #[cfg(test)]
+        self.content_checkpoint(crate::staged_content::ContentStep::Write)?;
+        stage.write_at(offset, bytes).await
+    }
+
+    async fn stage_write_end(
+        &self,
+        stage: &mut dyn crate::content::StagedObject,
+        bytes: &[u8],
+    ) -> Result<(), Error> {
+        #[cfg(test)]
+        self.content_checkpoint(crate::staged_content::ContentStep::Write)?;
+        stage.write_end(bytes).await
+    }
+
+    async fn stage_sync(&self, stage: &mut dyn crate::content::StagedObject) -> Result<(), Error> {
         #[cfg(test)]
         self.content_checkpoint(crate::staged_content::ContentStep::Sync)?;
-        stage.file.sync_all()?;
-        Ok(())
+        stage.sync().await
     }
 
-    fn stage_publish(&self, stage: &mut StagedContent) -> Result<(), Error> {
+    async fn stage_publish(
+        &self,
+        stage: &mut dyn crate::content::StagedObject,
+    ) -> Result<(), Error> {
         #[cfg(test)]
         self.content_checkpoint(crate::staged_content::ContentStep::Publish)?;
-        stage.publish()
+        stage.publish().await
     }
 
     #[cfg(test)]

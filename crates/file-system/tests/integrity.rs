@@ -122,8 +122,12 @@ impl Fixture {
     async fn new(chunks: Vec<Chunk>) -> Self {
         let source_root = std::env::temp_dir().join(format!("offs-integrity-{}", Uuid::now_v7()));
         let target_root = std::env::temp_dir().join(format!("offs-integrity-{}", Uuid::now_v7()));
-        let source = FileSystem::open(&source_root, 1).expect("source opens");
-        let target = FileSystem::open(&target_root, 2).expect("target opens");
+        let source = FileSystem::open(&source_root, 1)
+            .await
+            .expect("source opens");
+        let target = FileSystem::open(&target_root, 2)
+            .await
+            .expect("target opens");
         source
             .set_residency("", Residency::Full)
             .await

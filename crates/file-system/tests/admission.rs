@@ -88,7 +88,9 @@ async fn generic_session_codecs_preserve_open_read_write_scan_and_close_semantic
     }
 
     let root = std::env::temp_dir().join(format!("offs-session-{}", Uuid::now_v7()));
-    let files = FileSystem::open(&root, 1_u8).expect("filesystem opens");
+    let files = FileSystem::open(&root, 1_u8)
+        .await
+        .expect("filesystem opens");
     files
         .set_residency("", Residency::Full)
         .await
@@ -266,8 +268,12 @@ async fn generic_session_codecs_preserve_open_read_write_scan_and_close_semantic
 async fn generic_metadata_codec_preserves_live_snapshots_and_tombstones() {
     let source_root = std::env::temp_dir().join(format!("offs-codec-{}", Uuid::now_v7()));
     let target_root = std::env::temp_dir().join(format!("offs-codec-{}", Uuid::now_v7()));
-    let source = FileSystem::open(&source_root, 1_u8).expect("source opens");
-    let target = FileSystem::open(&target_root, 2_u8).expect("target opens");
+    let source = FileSystem::open(&source_root, 1_u8)
+        .await
+        .expect("source opens");
+    let target = FileSystem::open(&target_root, 2_u8)
+        .await
+        .expect("target opens");
     source
         .set_residency("", Residency::Full)
         .await
@@ -321,8 +327,12 @@ async fn generic_metadata_codec_preserves_live_snapshots_and_tombstones() {
 async fn queued_snapshots_recheck_local_decision_before_import() {
     let left_root = std::env::temp_dir().join(format!("offs-admission-{}", Uuid::now_v7()));
     let right_root = std::env::temp_dir().join(format!("offs-admission-{}", Uuid::now_v7()));
-    let left = FileSystem::open(&left_root, 1_u8).expect("source opens");
-    let right = FileSystem::open(&right_root, 2_u8).expect("target opens");
+    let left = FileSystem::open(&left_root, 1_u8)
+        .await
+        .expect("source opens");
+    let right = FileSystem::open(&right_root, 2_u8)
+        .await
+        .expect("target opens");
     left.set_residency("", Residency::Full)
         .await
         .expect("source is full");
@@ -366,8 +376,12 @@ async fn queued_snapshots_recheck_local_decision_before_import() {
 async fn invalid_snapshot_set_rolls_back_and_retains_prior_imports_and_tombstones() {
     let left_root = std::env::temp_dir().join(format!("offs-admission-{}", Uuid::now_v7()));
     let right_root = std::env::temp_dir().join(format!("offs-admission-{}", Uuid::now_v7()));
-    let left = FileSystem::open(&left_root, 1_u8).expect("source opens");
-    let right = FileSystem::open(&right_root, 2_u8).expect("target opens");
+    let left = FileSystem::open(&left_root, 1_u8)
+        .await
+        .expect("source opens");
+    let right = FileSystem::open(&right_root, 2_u8)
+        .await
+        .expect("target opens");
     left.set_residency("", Residency::Full)
         .await
         .expect("source full");
@@ -419,7 +433,9 @@ async fn invalid_snapshot_set_rolls_back_and_retains_prior_imports_and_tombstone
 #[tokio::test]
 async fn established_handle_rechecks_every_queued_operation() {
     let root = std::env::temp_dir().join(format!("offs-admission-{}", Uuid::now_v7()));
-    let files = FileSystem::open(&root, 1_u8).expect("filesystem opens");
+    let files = FileSystem::open(&root, 1_u8)
+        .await
+        .expect("filesystem opens");
     files
         .set_residency("", Residency::Full)
         .await
@@ -523,7 +539,9 @@ async fn cancellation_drops_pending_policy_and_prevents_queued_mutation() {
         }
     }
     let root = std::env::temp_dir().join(format!("offs-admission-{}", Uuid::now_v7()));
-    let files = FileSystem::open(&root, 1_u8).expect("filesystem opens");
+    let files = FileSystem::open(&root, 1_u8)
+        .await
+        .expect("filesystem opens");
     files
         .set_residency("", Residency::Full)
         .await
@@ -576,7 +594,9 @@ async fn cancellation_drops_pending_policy_and_prevents_queued_mutation() {
 #[tokio::test]
 async fn admitted_write_survives_cancellation_during_response_backpressure() {
     let root = std::env::temp_dir().join(format!("offs-admission-{}", Uuid::now_v7()));
-    let files = FileSystem::open(&root, 1_u8).expect("filesystem opens");
+    let files = FileSystem::open(&root, 1_u8)
+        .await
+        .expect("filesystem opens");
     files
         .set_residency("", Residency::Full)
         .await
@@ -667,7 +687,9 @@ async fn admitted_write_survives_cancellation_during_response_backpressure() {
 #[tokio::test]
 async fn cancellation_wins_when_policy_completes_in_the_same_poll() {
     let root = std::env::temp_dir().join(format!("offs-admission-{}", Uuid::now_v7()));
-    let files = FileSystem::open(&root, 1_u8).expect("filesystem opens");
+    let files = FileSystem::open(&root, 1_u8)
+        .await
+        .expect("filesystem opens");
     let holder = Arc::new(std::sync::Mutex::new(None::<OperationControl<u8>>));
     let policy_holder = Arc::clone(&holder);
     let control = OperationControl::new(move |_, _| {

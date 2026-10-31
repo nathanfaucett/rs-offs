@@ -3,6 +3,8 @@ use std::{future::Future, sync::Arc};
 use tokio::sync::watch;
 use uuid::Uuid;
 
+use ofdb_platform::{MaybeSend, MaybeSync};
+
 use crate::{Error, FileFuture, FileOperation};
 
 #[derive(Clone, Debug)]
@@ -19,13 +21,22 @@ pub enum RemoteOperation {
     },
 }
 
-type Decision<PeerId> = dyn Fn(PeerId, RemoteOperation) -> FileFuture<'static, bool> + Send + Sync;
+trait Decision<PeerId>:
+    Fn(PeerId, RemoteOperation) -> FileFuture<'static, bool> + MaybeSend + MaybeSync
+{
+}
+impl<PeerId, F> Decision<PeerId> for F where
+    F: ?Sized + Fn(PeerId, RemoteOperation) -> FileFuture<'static, bool> + MaybeSend + MaybeSync
+{
+}
+
+type DecisionObject<PeerId> = dyn Decision<PeerId>;
 
 /// Caller-local policy and one-way cancellation for one sync executor.
 /// Admission is linearized by the final cancellation read after the decision completes.
 /// Admitted mutations finish without cancellation selection; outbound delivery waits are cancellable.
 pub struct OperationControl<PeerId> {
-    decision: Arc<Decision<PeerId>>,
+    decision: Arc<DecisionObject<PeerId>>,
     cancelled: watch::Sender<bool>,
 }
 
@@ -40,7 +51,10 @@ impl<PeerId> Clone for OperationControl<PeerId> {
 
 impl<PeerId> OperationControl<PeerId> {
     pub fn new(
-        decision: impl Fn(PeerId, RemoteOperation) -> FileFuture<'static, bool> + Send + Sync + 'static,
+        decision: impl Fn(PeerId, RemoteOperation) -> FileFuture<'static, bool>
+        + MaybeSend
+        + MaybeSync
+        + 'static,
     ) -> Self {
         Self {
             decision: Arc::new(decision),
