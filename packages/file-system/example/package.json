@@ -1,0 +1,31 @@
+{
+  "name": "offs-browser-example",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser file system example for @offs/file-system (Vite + Svelte + Tailwind)",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "prepare": "svelte-kit sync || echo ''",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "lint": "biome lint .",
+    "format": "biome format ."
+  },
+  "dependencies": {
+    "@offs/file-system": "file:.."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.3",
+    "@sveltejs/adapter-static": "^3.0.10",
+    "@sveltejs/kit": "^2.69.2",
+    "@sveltejs/vite-plugin-svelte": "^7.2.0",
+    "@tailwindcss/vite": "^4.3.2",
+    "svelte": "^5.56.4",
+    "svelte-check": "^4.7.2",
+    "tailwindcss": "^4.3.2",
+    "typescript": "^5.9.3",
+    "vite": "^8.1.4"
+  }
+}

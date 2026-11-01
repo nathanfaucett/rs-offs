@@ -8,9 +8,19 @@
     "lint:fix": "pnpm -r run lint:fix",
     "format": "pnpm -r run format",
     "format:fix": "pnpm -r run format:fix",
-    "packages:build": "pnpm --filter \"./packages/*\" run build"
+    "packages:build": "pnpm --filter \"./packages/*\" run build",
+    "fs:build": "pnpm --filter @offs/file-system run build",
+    "fs:example:dev": "pnpm --filter offs-browser-example run dev",
+    "fs:example:build": "pnpm --filter offs-browser-example run build",
+    "fs:example:preview": "pnpm --filter offs-browser-example run preview",
+    "fs:example:check": "pnpm --filter offs-browser-example run check"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3"
+  },
+  "pnpm": {
+    "overrides": {
+      "wasm-pack@*": "0.13.1"
+    }
   }
 }

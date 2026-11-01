@@ -1,0 +1,14 @@
+{
+  "extends": "//",
+  "files": {
+    "ignoreUnknown": true,
+    "includes": [
+      "src/**/*",
+      "biome.json",
+      "package.json",
+      "svelte.config.js",
+      "tsconfig.json",
+      "vite.config.ts"
+    ]
+  }
+}

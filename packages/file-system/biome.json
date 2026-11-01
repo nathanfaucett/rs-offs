@@ -2,12 +2,6 @@
   "extends": "//",
   "files": {
     "ignoreUnknown": true,
-    "includes": [
-      "src/**/*",
-      "biome.json",
-      "package.json",
-      "rolldown.config.mjs",
-      "tsconfig.json"
-    ]
+    "includes": ["src/**/*", "biome.json", "package.json", "tsconfig.json"]
   }
 }

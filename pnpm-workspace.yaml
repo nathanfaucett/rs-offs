@@ -1,5 +1,6 @@
 packages:
   - "packages/*"
+  - "packages/**/example"
 allowBuilds:
-  rolldown: true
+  esbuild: true
   wasm-pack: true

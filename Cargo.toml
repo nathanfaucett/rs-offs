@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/file-system"]
+members = ["crates/*"]
 
 [workspace.package]
 version = "0.1.0"
@@ -70,4 +70,4 @@ opt-level = "s"
 lto = "thin"
 codegen-units = 1
 panic = "abort"
-strip = true
+strip = false
