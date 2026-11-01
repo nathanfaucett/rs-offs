@@ -3,9 +3,12 @@
 /types/
 /pkg/
 /example/node_modules/
+/example/build/
 /example/dist/
+/example/.svelte-kit/
+/example/.vite/
 /example/target/
 /example/pkg/
-/example/.svelte-kit/
 *.tsbuildinfo
-npm-debug.log
+vite.config.*.timestamp-*
+npm-debug.log*
