@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 #[cfg(not(target_arch = "wasm32"))]
 use ofdb_kv::Database;
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+use ofdb_kv::Database;
 use ofdb_kv::{Client, Value};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -67,6 +69,8 @@ pub struct CatalogEntry {
 pub struct FileSystemCatalog {
     #[cfg(not(target_arch = "wasm32"))]
     namespace_root: PathBuf,
+    #[cfg(all(target_arch = "wasm32", feature = "browser"))]
+    namespace: String,
     client: Client,
 }
 
@@ -79,6 +83,17 @@ impl FileSystemCatalog {
             .map_err(metadata_error)?;
         Ok(Self {
             namespace_root: root.join("filesystems"),
+            client: database.client(),
+        })
+    }
+
+    #[cfg(all(target_arch = "wasm32", feature = "browser"))]
+    pub async fn open_browser(namespace: &str) -> Result<Self, Error> {
+        let database = Database::open_indexeddb(&format!("offs:{namespace}:catalog"))
+            .await
+            .map_err(metadata_error)?;
+        Ok(Self {
+            namespace: namespace.to_owned(),
             client: database.client(),
         })
     }
@@ -102,7 +117,6 @@ impl FileSystemCatalog {
         Ok(resource)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub async fn open_filesystem<PeerId>(
         &self,
         id: FileSystemId,
@@ -121,7 +135,19 @@ impl FileSystemCatalog {
         if !self.list().await?.iter().any(|resource| resource.id == id) {
             return Err(Error::NotFound);
         }
-        crate::FileSystem::open(self.namespace_root.join(id.0.to_string()), node_id).await
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            crate::FileSystem::open(self.namespace_root.join(id.0.to_string()), node_id).await
+        }
+        #[cfg(all(target_arch = "wasm32", feature = "browser"))]
+        {
+            crate::FileSystem::open_browser(&self.namespace, &id.0.to_string(), node_id).await
+        }
+        #[cfg(all(target_arch = "wasm32", not(feature = "browser")))]
+        {
+            let _ = node_id;
+            Err(Error::PermissionDenied)
+        }
     }
 
     pub async fn list(&self) -> Result<Vec<FileSystemResource>, Error> {
@@ -190,7 +216,6 @@ impl FileSystemCatalog {
             .collect()
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     /// Permanently retires this device's managed copy without changing catalog identity or
     /// tombstones. Cancellation or failure leaves the durable gate closed; call again to
     /// finish cleanup.
@@ -203,7 +228,14 @@ impl FileSystemCatalog {
         {
             return Err(Error::NotFound);
         }
-        crate::native::remove_root(&self.namespace_root.join(id.0.to_string())).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            crate::native::remove_root(&self.namespace_root.join(id.0.to_string())).await?;
+        }
+        #[cfg(all(target_arch = "wasm32", feature = "browser"))]
+        {
+            crate::browser::remove_root(&self.namespace, &id.0.to_string()).await?;
+        }
         let mut transaction = self.client.transaction().await.map_err(metadata_error)?;
         let key = id.projected_key();
         if transaction
@@ -220,7 +252,6 @@ impl FileSystemCatalog {
         transaction.commit().await.map_err(metadata_error)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     /// Retires a selected projection using the same owner lifecycle as created copies.
     pub async fn evict_projected_copy(&self, id: FileSystemId) -> Result<bool, Error> {
         if !self.projected_selected().await?.contains(&id) {

@@ -1,4 +1,8 @@
-#![cfg_attr(target_arch = "wasm32", allow(dead_code))] // browser construction lands with the browser backend
+// wasm32: browser storage handles are Rc-based, so Arc here is a single-threaded refcount
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, clippy::arc_with_non_send_sync)
+)]
 
 use std::{collections::BTreeMap, future::Future, sync::Arc, sync::Weak};
 
@@ -38,25 +42,34 @@ thread_local! {
 
 impl ManagedCopy {
     /// Returns the shared managed copy for `key`, creating it with `build` when absent.
-    pub(crate) fn shared(
+    pub(crate) async fn shared(
         key: String,
-        build: impl FnOnce(&str) -> Result<Box<dyn RootObject>, Error>,
+        build: impl FnOnce(
+            &str,
+        )
+            -> ofdb_platform::BoxFuture<'static, Result<Box<dyn RootObject>, Error>>,
     ) -> Result<Arc<Self>, Error> {
-        registry(|copies| {
+        if let Some(copy) = registry(|copies| {
             copies.retain(|_, copy| copy.strong_count() != 0);
-            if let Some(copy) = copies.get(&key).and_then(Weak::upgrade) {
-                return Ok(copy);
+            copies.get(&key).and_then(Weak::upgrade)
+        }) {
+            return Ok(copy);
+        }
+        let root = build(&key).await?;
+        let copy = Arc::new(Self {
+            retired: watch::channel(false).0,
+            root: RwLock::new(root),
+            storage: RwLock::new(None),
+            execution: tokio::sync::Mutex::new(()),
+        });
+        Ok(registry(|copies| {
+            copies.retain(|_, copy| copy.strong_count() != 0);
+            if let Some(existing) = copies.get(&key).and_then(Weak::upgrade) {
+                return existing;
             }
-            let root = build(&key)?;
-            let copy = Arc::new(Self {
-                retired: watch::channel(false).0,
-                root: RwLock::new(root),
-                storage: RwLock::new(None),
-                execution: tokio::sync::Mutex::new(()),
-            });
             copies.insert(key, Arc::downgrade(&copy));
-            Ok(copy)
-        })
+            copy
+        }))
     }
 
     pub(crate) fn check(&self) -> Result<(), Error> {

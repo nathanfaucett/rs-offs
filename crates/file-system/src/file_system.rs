@@ -38,12 +38,30 @@ where
 {
     pub(crate) owner: Arc<ManagedCopy>,
     node_id: PeerId,
-    residency: Mutex<ResidencyRules>,
+    residency: Arc<Mutex<ResidencyRules>>,
     pub(crate) changes: broadcast::Sender<()>,
     #[cfg(test)]
     pub(crate) content_fault: Mutex<Option<crate::staged_content::ContentStep>>,
     #[cfg(test)]
     pub(crate) content_action: Mutex<Option<crate::staged_content::ContentAction>>,
+}
+
+impl<PeerId> Clone for FileSystem<PeerId>
+where
+    PeerId: Clone + Debug + Ord + Serialize + DeserializeOwned + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            owner: Arc::clone(&self.owner),
+            node_id: self.node_id.clone(),
+            residency: Arc::clone(&self.residency),
+            changes: self.changes.clone(),
+            #[cfg(test)]
+            content_fault: Mutex::new(None),
+            #[cfg(test)]
+            content_action: Mutex::new(None),
+        }
+    }
 }
 
 impl<PeerId> FileSystem<PeerId>
@@ -53,12 +71,30 @@ where
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn open(root: impl AsRef<std::path::Path>, node_id: PeerId) -> Result<Self, Error> {
         let owner = native::open(root.as_ref()).await?;
+        Self::new(owner, node_id)
+    }
+
+    #[cfg(all(target_arch = "wasm32", feature = "browser"))]
+    pub async fn open_browser(namespace: &str, name: &str, node_id: PeerId) -> Result<Self, Error> {
+        let owner = crate::browser::open(namespace, name).await?;
+        Self::new(owner, node_id)
+    }
+
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(feature = "browser")),
+        allow(dead_code)
+    )]
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(feature = "browser")),
+        allow(dead_code)
+    )]
+    fn new(owner: std::sync::Arc<ManagedCopy>, node_id: PeerId) -> Result<Self, Error> {
         let changes = broadcast::channel(16).0;
 
         Ok(Self {
             owner,
             node_id,
-            residency: Mutex::new(ResidencyRules::default()),
+            residency: Arc::new(Mutex::new(ResidencyRules::default())),
             changes,
             #[cfg(test)]
             content_fault: Mutex::new(None),

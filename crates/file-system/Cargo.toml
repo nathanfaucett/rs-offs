@@ -14,7 +14,12 @@ name = "file_system"
 
 [features]
 default = []
-browser = []
+browser = [
+    "dep:js-sys",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:web-sys",
+]
 
 [dependencies]
 # Internal
@@ -63,6 +68,25 @@ uuid = { version = "1.26", default-features = false, features = [
 ] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# Browser capabilities
+js-sys = { version = "0.3", default-features = false, features = [
+    "std",
+], optional = true }
+wasm-bindgen = { version = "0.2", default-features = false, features = [
+    "std",
+], optional = true }
+wasm-bindgen-futures = { version = "0.4", default-features = false, features = [
+    "std",
+], optional = true }
+web-sys = { version = "0.3", default-features = false, features = [
+    "Blob",
+    "FileSystemDirectoryHandle",
+    "FileSystemFileHandle",
+    "FileSystemGetDirectoryOptions",
+    "FileSystemGetFileOptions",
+    "FileSystemWritableFileStream",
+], optional = true }
+
 # Internal
 ofdb-kv = { version = "0.1", path = "../../../ofdb/crates/kv", default-features = false, features = [
     "indexeddb",

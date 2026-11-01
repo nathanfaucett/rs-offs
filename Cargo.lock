@@ -372,6 +372,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
+ "js-sys",
  "ofdb-kv",
  "ofdb-platform",
  "postcard",
@@ -380,6 +381,9 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

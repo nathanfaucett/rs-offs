@@ -9,7 +9,7 @@ pub enum Residency {
     Passthrough,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct ResidencyRules {
     rules: BTreeMap<String, Residency>,
 }

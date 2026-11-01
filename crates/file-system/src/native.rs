@@ -174,7 +174,7 @@ impl ContentStore for NativeContent {
 
 /// Opens the native managed copy for a filesystem root.
 pub(crate) async fn open(root: &Path) -> Result<Arc<ManagedCopy>, Error> {
-    let copy = locate(root)?;
+    let copy = locate(root).await?;
     copy.observe_retirement().await?;
     copy.check()?;
     if copy.storage_is_open() {
@@ -207,10 +207,10 @@ pub(crate) async fn open(root: &Path) -> Result<Arc<ManagedCopy>, Error> {
 
 /// Permanently retires and removes the native managed copy at a filesystem root.
 pub(crate) async fn remove_root(root: &Path) -> Result<(), Error> {
-    locate(root)?.remove().await
+    locate(root).await?.remove().await
 }
 
-fn locate(root: &Path) -> Result<Arc<ManagedCopy>, Error> {
+async fn locate(root: &Path) -> Result<Arc<ManagedCopy>, Error> {
     let root = std::path::absolute(root)?;
     let parent = root.parent().ok_or(Error::InvalidPath)?;
     fs::create_dir_all(parent)?;
@@ -220,7 +220,11 @@ fn locate(root: &Path) -> Result<Arc<ManagedCopy>, Error> {
     if fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(Error::InvalidPath);
     }
-    ManagedCopy::shared(root.to_string_lossy().into_owned(), |key| {
-        Ok(Box::new(NativeRoot::new(PathBuf::from(key))) as Box<dyn crate::root::RootObject>)
+    ManagedCopy::shared(root.to_string_lossy().into_owned(), move |key| {
+        let root = PathBuf::from(key);
+        Box::pin(
+            async move { Ok(Box::new(NativeRoot::new(root)) as Box<dyn crate::root::RootObject>) },
+        )
     })
+    .await
 }

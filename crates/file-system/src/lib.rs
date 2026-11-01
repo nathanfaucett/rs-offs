@@ -26,6 +26,11 @@ mod transport;
 mod content;
 mod root;
 
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+mod browser;
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+pub mod browser_api;
+
 pub use error::Error;
 pub use file_meta::{FileKind, FileMeta};
 
