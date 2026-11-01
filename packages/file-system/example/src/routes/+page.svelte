@@ -1,95 +1,104 @@
 <script lang="ts">
-  import { FileSystem, type Entry } from "@offs/file-system";
+import { type Entry, FileSystem } from "@offs/file-system";
 
-  let fs: FileSystem | null = $state(null);
-  let status = $state("Not initialized");
-  let error = $state("");
+let fs: FileSystem | null = $state(null);
+let status = $state("Not initialized");
+let error = $state("");
 
-  let writePath = $state("notes/demo.txt");
-  let writeContent = $state("Hello from offs!");
-  let readOutput = $state("");
-  let listOutput = $state("");
-  let dirPath = $state("notes");
+let writePath = $state("notes/demo.txt");
+let writeContent = $state("Hello from offs!");
+let readOutput = $state("");
+let listOutput = $state("");
+let dirPath = $state("notes");
 
-  async function init() {
-    try {
-      error = "";
-      status = "Initializing WASM…";
-      fs = await FileSystem.open("demo", "fs1", "node1");
-      status = "File system opened: demo/fs1";
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-      status = "Error";
-    }
+async function init() {
+  try {
+    error = "";
+    status = "Initializing WASM…";
+    fs = await FileSystem.open("demo", "fs1", "node1");
+    status = "File system opened: demo/fs1";
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
+    status = "Error";
   }
+}
 
-  async function write() {
-    if (!fs) return;
-    try {
-      error = "";
-      const entry = await fs.write(writePath, new TextEncoder().encode(writeContent));
-      status = `Wrote ${writePath} (rev: ${entry.meta.revision})`;
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    }
+async function write() {
+  if (!fs) return;
+  try {
+    error = "";
+    const entry = await fs.write(
+      writePath,
+      new TextEncoder().encode(writeContent),
+    );
+    status = `Wrote ${writePath} (rev: ${entry.meta.revision})`;
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
   }
+}
 
-  async function read() {
-    if (!fs) return;
-    try {
-      error = "";
-      const data = await fs.read(writePath);
-      readOutput = new TextDecoder().decode(data);
-      status = `Read ${data.length} bytes`;
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    }
+async function read() {
+  if (!fs) return;
+  try {
+    error = "";
+    const data = await fs.read(writePath);
+    readOutput = new TextDecoder().decode(data);
+    status = `Read ${data.length} bytes`;
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
   }
+}
 
-  async function append() {
-    if (!fs) return;
-    try {
-      error = "";
-      await fs.append(writePath, new TextEncoder().encode(`\nAppended at ${new Date().toISOString()}`));
-      status = "Appended";
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    }
+async function append() {
+  if (!fs) return;
+  try {
+    error = "";
+    await fs.append(
+      writePath,
+      new TextEncoder().encode(`\nAppended at ${new Date().toISOString()}`),
+    );
+    status = "Appended";
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
   }
+}
 
-  async function mkdir() {
-    if (!fs) return;
-    try {
-      error = "";
-      await fs.createDir(dirPath);
-      status = `Created directory ${dirPath}`;
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    }
+async function mkdir() {
+  if (!fs) return;
+  try {
+    error = "";
+    await fs.createDir(dirPath);
+    status = `Created directory ${dirPath}`;
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
   }
+}
 
-  async function list() {
-    if (!fs) return;
-    try {
-      error = "";
-      const entries: Entry[] = await fs.list(dirPath);
-      listOutput = entries.map((e) => `${e.path} (${e.meta.kind}) rev:${e.meta.revision}`).join("\n") || "(empty)";
-      status = `Listed ${entries.length} entries`;
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    }
+async function list() {
+  if (!fs) return;
+  try {
+    error = "";
+    const entries: Entry[] = await fs.list(dirPath);
+    listOutput =
+      entries
+        .map((e) => `${e.path} (${e.meta.kind}) rev:${e.meta.revision}`)
+        .join("\n") || "(empty)";
+    status = `Listed ${entries.length} entries`;
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
   }
+}
 
-  async function remove() {
-    if (!fs) return;
-    try {
-      error = "";
-      await fs.delete(dirPath);
-      status = `Deleted ${dirPath}`;
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    }
+async function remove() {
+  if (!fs) return;
+  try {
+    error = "";
+    await fs.delete(dirPath);
+    status = `Deleted ${dirPath}`;
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
   }
+}
 </script>
 
 <main class="mx-auto max-w-2xl p-8 font-sans">

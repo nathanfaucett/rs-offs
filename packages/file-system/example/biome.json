@@ -1,5 +1,15 @@
 {
   "extends": "//",
+  "linter": {
+    "rules": {
+      "style": {
+        "useImportType": "error"
+      },
+      "correctness": {
+        "noUnusedVariables": "error"
+      }
+    }
+  },
   "files": {
     "ignoreUnknown": true,
     "includes": [
@@ -10,5 +20,17 @@
       "tsconfig.json",
       "vite.config.ts"
     ]
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["**/*.svelte"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnusedVariables": "off"
+          }
+        }
+      }
+    }
+  ]
 }

@@ -1,20 +1,12 @@
 {
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "./src",
     "outDir": "esm",
     "declarationDir": "types",
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "target": "ES2021",
-    "lib": ["ES2021", "DOM", "DOM.Iterable", "ESNext.Symbol"],
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
     "noEmit": false,
+    "lib": ["ESNext", "DOM", "DOM.Iterable"]
   },
   "include": ["src"],
-  "exclude": ["src/**/*.test.*", "types", "pkg"],
+  "exclude": ["src/**/*.test.*", "types", "pkg", "esm", "node_modules"]
 }

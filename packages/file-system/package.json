@@ -16,7 +16,11 @@
     "build:wasm": "cd ../../crates/wasm && wasm-pack build --target web --out-dir ../../packages/file-system/pkg --features browser --locked",
     "build:ts": "tsc -p tsconfig.json",
     "clean": "shx rm -rf esm types pkg tsconfig.tsbuildinfo",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check --error-on-warnings .",
+    "lint:fix": "biome check --write --error-on-warnings .",
+    "format": "biome format .",
+    "format:fix": "biome format --write ."
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",
