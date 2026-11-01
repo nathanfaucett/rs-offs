@@ -356,12 +356,12 @@ fn error_message(error: crate::FileServiceError) -> Error {
 /// An open File System in the browser.
 #[wasm_bindgen]
 pub struct FileSystemHandle {
-    inner: RefCell<Option<FileSystem<PeerId>>>,
+    inner: RefCell<Option<FileSystem<String>>>,
 }
 
 impl FileSystemHandle {
     /// Clones the filesystem out of the cell so no borrow is held across an await.
-    fn borrowed(&self) -> Result<FileSystem<PeerId>, JsValue> {
+    fn borrowed(&self) -> Result<FileSystem<String>, JsValue> {
         self.inner
             .borrow()
             .as_ref()

@@ -1,0 +1,16 @@
+{
+  "name": "@local/offs-monorepo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "pnpm -r run test",
+    "lint": "pnpm -r run lint",
+    "lint:fix": "pnpm -r run lint:fix",
+    "format": "pnpm -r run format",
+    "format:fix": "pnpm -r run format:fix",
+    "packages:build": "pnpm --filter \"./packages/*\" run build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.3"
+  }
+}

@@ -1,1 +1,12 @@
 /target
+/node_modules
+/packages/*/node_modules
+/packages/*/esm
+/packages/*/browser
+/packages/*/types
+/packages/*/dist
+/packages/*/tsconfig.tsbuildinfo
+/packages/*/package-lock.json
+/packages/*/pnpm-lock.yaml
+/coverage
+*.tsbuildinfo

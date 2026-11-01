@@ -18,9 +18,13 @@ use crate::{
 
 #[wasm_bindgen(module = "/src/browser_storage.js")]
 extern "C" {
+    #[wasm_bindgen(js_name = storageRoot)]
     fn storage_root() -> js_sys::Promise;
+    #[wasm_bindgen(js_name = removeTree)]
     async fn remove_tree(dir: &web_sys::FileSystemDirectoryHandle, name: &str);
+    #[wasm_bindgen(js_name = deleteDatabase)]
     fn delete_database(name: &str);
+    #[wasm_bindgen(js_name = acquireLock)]
     fn acquire_lock(name: &str) -> js_sys::Promise;
 }
 

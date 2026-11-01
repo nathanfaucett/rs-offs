@@ -11,6 +11,11 @@ description = "Local-first, eventually consistent file system primitives"
 
 [lib]
 name = "file_system"
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.wasm-pack]
+profiles.dev = { wasm-opt = false }
+profiles.release = { wasm-opt = ["-Oz", "--enable-bulk-memory"] }
 
 [features]
 default = []
@@ -61,7 +66,7 @@ ofdb-kv = { version = "0.1", path = "../../../ofdb/crates/kv", default-features 
 ] }
 
 # Utilities
-uuid = { version = "1.26", default-features = false, features = [
+uuid = { version = "1.29", default-features = false, features = [
     "serde",
     "std",
     "v7",
@@ -94,7 +99,7 @@ ofdb-kv = { version = "0.1", path = "../../../ofdb/crates/kv", default-features 
 ] }
 
 # Utilities
-uuid = { version = "1.26", default-features = false, features = [
+uuid = { version = "1.29", default-features = false, features = [
     "serde",
     "std",
     "v7",

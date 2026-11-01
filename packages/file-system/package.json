@@ -1,0 +1,38 @@
+{
+  "name": "@offs/file-system",
+  "version": "0.1.0",
+  "description": "TypeScript wrapper for offs File System WASM module",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./esm/index.js"
+    },
+    "./package.json": "./package.json",
+    "./generated": {
+      "types": "./types/generated/index.d.ts",
+      "default": "./esm/generated/index.js"
+    }
+  },
+  "scripts": {
+    "build:esm": "tsc --project tsconfig.json",
+    "build:browser": "rolldown -c",
+    "build": "pnpm run clean && pnpm run build:esm && pnpm run build:browser",
+    "clean": "shx rm -rf esm browser types tsconfig.tsbuildinfo",
+    "lint": "biome lint .",
+    "format": "biome format .",
+    "format:fix": "biome format --write .",
+    "test": "vitest"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.3",
+    "rolldown": "^1.1.5",
+    "shx": "^0.4.0",
+    "typescript": "^5.9.3",
+    "vitest": "4.1.10"
+  },
+  "dependencies": {
+    "idb": "^8.0.0"
+  }
+}
