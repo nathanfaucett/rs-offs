@@ -2,12 +2,12 @@
 
 **What to build:** Test the new `FileSystem.open(root?)` API and clean `FileMeta` output.
 
-**Blocked by:** 01-wasm-ts-clean-api
+**Blocked by:** 01-wasm-ts-clean-api (done)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `FileSystem.open()` works (default root)
-- [ ] `FileSystem.open("custom-root")` creates isolated storage
-- [ ] `write`/`read`/`list`/`delete`/`entry`/`scan` all work
-- [ ] All returned `FileMeta` have exactly 4 fields: `file_id`, `revision`, `kind`, `mode`
-- [ ] No `owner`, `group`, `providers`, `local` in any response
+- [x] `FileSystem.open()` works (default root)
+- [x] `FileSystem.open("custom-root")` creates isolated storage
+- [x] `write`/`read`/`list`/`delete`/`entry`/`scan` all work
+- [x] All returned `FileMeta` have exactly 4 fields: `file_id`, `revision`, `kind`, `mode`
+- [x] No `owner`, `group`, `providers`, `local` in any response

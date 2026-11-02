@@ -4,11 +4,11 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] WASM: `FileSystemHandle.open(root: String, node_id: Option<String>)` — defaults to `"local"`
-- [ ] WASM: Serialize only `file_id`, `revision`, `kind`, `mode` for `entry`/`write`/`create_dir`/`list`/`scan`
-- [ ] Rust: `open_browser(root: &str, node_id: PeerId)` uses single root for DB/OPFS paths
-- [ ] TypeScript: `FileSystem.open(root?: string)` — defaults to `"default"`
-- [ ] TypeScript: `FileMeta` = `{ file_id, revision, kind, mode }` only
-- [ ] No deprecated APIs, no migration layer
+- [x] WASM: `FileSystemHandle.open(root: String, node_id: Option<String>)` — defaults to `"local"`
+- [x] WASM: Serialize only `file_id`, `revision`, `kind`, `mode` for `entry`/`write`/`create_dir`/`list`/`scan`
+- [x] Rust: `open_browser(root: &str, node_id: PeerId)` uses single root for DB/OPFS paths
+- [x] TypeScript: `FileSystem.open(root?: string)` — defaults to `"default"`
+- [x] TypeScript: `FileMeta` = `{ file_id, revision, kind, mode }` only
+- [x] No deprecated APIs, no migration layer

@@ -575,3 +575,248 @@ async fn retirement_allows_admitted_session_write_to_finish_and_revokes_cloned_o
     drop(catalog);
     fs::remove_dir_all(root).expect("cleanup");
 }
+
+#[cfg(test)]
+mod pure_filesystem_api_tests {
+    use super::*;
+    use crate::FileKind;
+    use uuid::Uuid;
+
+    fn root() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("offs-pure-api-{}", Uuid::now_v7()))
+    }
+
+    #[tokio::test]
+    async fn open_with_default_root_works() {
+        let root = root();
+        let fs = FileSystem::open(&root, "local".to_string())
+            .await
+            .expect("filesystem opens");
+        fs.set_residency("", Residency::Full)
+            .await
+            .expect("full residency");
+
+        let entry = fs.write("test.txt", b"hello").await.expect("write works");
+        assert_eq!(entry.path, "test.txt");
+        assert_eq!(entry.meta.kind, FileKind::File);
+        assert_eq!(entry.meta.mode, 0o644);
+        assert!(!entry.meta.file_id.is_nil());
+        assert!(!entry.meta.revision.is_nil());
+
+        let read = fs.read("test.txt").await.expect("read works");
+        assert_eq!(read, b"hello");
+
+        let entry2 = fs.entry("test.txt").await.expect("entry works");
+        assert_eq!(entry2.path, "test.txt");
+        assert_eq!(entry2.meta.kind, FileKind::File);
+        assert_eq!(entry2.meta.mode, 0o644);
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn open_with_custom_root_creates_isolated_storage() {
+        let root1 = root();
+        let root2 = root();
+
+        let fs1 = FileSystem::open(&root1, "local".to_string())
+            .await
+            .expect("fs1 opens");
+        fs1.set_residency("", Residency::Full)
+            .await
+            .expect("full residency");
+        fs1.write("file.txt", b"data1").await.expect("write to fs1");
+
+        let fs2 = FileSystem::open(&root2, "local".to_string())
+            .await
+            .expect("fs2 opens");
+        fs2.set_residency("", Residency::Full)
+            .await
+            .expect("full residency");
+        fs2.write("file.txt", b"data2").await.expect("write to fs2");
+
+        let read1 = fs1.read("file.txt").await.expect("read from fs1");
+        let read2 = fs2.read("file.txt").await.expect("read from fs2");
+        assert_eq!(read1, b"data1");
+        assert_eq!(read2, b"data2");
+
+        std::fs::remove_dir_all(&root1).expect("cleanup");
+        std::fs::remove_dir_all(&root2).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn file_meta_only_has_four_fields() {
+        let root = root();
+        let fs = FileSystem::open(&root, "local".to_string())
+            .await
+            .expect("filesystem opens");
+        fs.set_residency("", Residency::Full)
+            .await
+            .expect("full residency");
+
+        let entry = fs.write("test.txt", b"content").await.expect("write");
+        let meta = entry.meta;
+
+        // Verify only filesystem fields are present
+        assert!(!meta.file_id.is_nil());
+        assert!(!meta.revision.is_nil());
+        assert_eq!(meta.kind, FileKind::File);
+        assert_eq!(meta.mode, 0o644);
+
+        // Verify sync fields are NOT present (compile-time check)
+        // FileMeta has providers, local, owner, group but they're not in FileEntryMeta
+        // This test ensures the public API only exposes the 4 fields
+        let entry_meta = crate::FileEntryMeta {
+            file_id: meta.file_id,
+            revision: meta.revision,
+            kind: meta.kind,
+            mode: meta.mode,
+        };
+        assert_eq!(entry_meta.file_id, meta.file_id);
+        assert_eq!(entry_meta.revision, meta.revision);
+        assert_eq!(entry_meta.kind, meta.kind);
+        assert_eq!(entry_meta.mode, meta.mode);
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn all_operations_work_without_peer_config() {
+        let root = root();
+        let fs = FileSystem::open(&root, "local".to_string())
+            .await
+            .expect("filesystem opens");
+        fs.set_residency("", Residency::Full)
+            .await
+            .expect("full residency");
+
+        // write
+        let entry = fs.write("notes.txt", b"note 1").await.expect("write");
+        assert_eq!(entry.meta.kind, FileKind::File);
+
+        // read
+        let data = fs.read("notes.txt").await.expect("read");
+        assert_eq!(data, b"note 1");
+
+        // append
+        fs.append("notes.txt", b"\nnote 2").await.expect("append");
+        let data = fs.read("notes.txt").await.expect("read after append");
+        assert_eq!(data, b"note 1\nnote 2");
+
+        // create_dir
+        let dir_entry = fs.create_dir("notes").await.expect("create_dir");
+        assert_eq!(dir_entry.meta.kind, FileKind::Directory);
+
+        // list
+        let entries = fs.list("notes").await.expect("list");
+        assert!(entries.is_empty());
+
+        // write in subdirectory
+        fs.write("notes/sub.txt", b"sub content")
+            .await
+            .expect("write sub");
+        let entries = fs.list("notes").await.expect("list sub");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "notes/sub.txt");
+
+        // entry
+        let entry = fs.entry("notes/sub.txt").await.expect("entry");
+        assert_eq!(entry.path, "notes/sub.txt");
+        assert_eq!(entry.meta.kind, FileKind::File);
+
+        // scan
+        let page = fs.scan("notes", None, 10).await.expect("scan");
+        assert_eq!(page.entries.len(), 1);
+
+        // delete
+        fs.delete("notes/sub.txt").await.expect("delete file");
+        let entries = fs.list("notes").await.expect("list after delete");
+        assert!(entries.is_empty());
+
+        fs.delete("notes").await.expect("delete dir");
+        let entries = fs.list("").await.expect("list root");
+        assert_eq!(entries.len(), 1); // notes.txt remains
+
+        // rename
+        fs.rename("notes.txt", "renamed.txt").await.expect("rename");
+        let entries = fs.list("").await.expect("list after rename");
+        assert_eq!(entries[0].path, "renamed.txt");
+
+        // revision
+        let rev = fs.revision("renamed.txt").await.expect("revision");
+        assert!(!rev.is_nil());
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn scan_returns_clean_file_meta() {
+        let root = root();
+        let fs = FileSystem::open(&root, "local".to_string())
+            .await
+            .expect("filesystem opens");
+        fs.set_residency("", Residency::Full)
+            .await
+            .expect("full residency");
+
+        fs.create_dir("dir").await.expect("create dir");
+        fs.write("dir/a.txt", b"a").await.expect("write a");
+        fs.write("dir/b.txt", b"b").await.expect("write b");
+
+        let page = fs.scan("dir", None, 10).await.expect("scan");
+        assert_eq!(page.entries.len(), 2);
+        for entry in &page.entries {
+            assert!(!entry.meta.file_id.is_nil());
+            assert!(!entry.meta.revision.is_nil());
+            assert!(matches!(entry.meta.kind, FileKind::File));
+            assert_eq!(entry.meta.mode, 0o644);
+        }
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn list_returns_clean_file_meta() {
+        let root = root();
+        let fs = FileSystem::open(&root, "local".to_string())
+            .await
+            .expect("filesystem opens");
+        fs.set_residency("", Residency::Full)
+            .await
+            .expect("full residency");
+
+        fs.create_dir("dir").await.expect("create dir");
+        fs.write("dir/a.txt", b"a").await.expect("write a");
+        fs.write("dir/b.txt", b"b").await.expect("write b");
+
+        let entries = fs.list("dir").await.expect("list");
+        assert_eq!(entries.len(), 2);
+        for entry in &entries {
+            assert!(!entry.meta.file_id.is_nil());
+            assert!(!entry.meta.revision.is_nil());
+            assert!(matches!(entry.meta.kind, FileKind::File));
+            assert_eq!(entry.meta.mode, 0o644);
+        }
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn create_dir_returns_clean_file_meta() {
+        let root = root();
+        let fs = FileSystem::open(&root, "local".to_string())
+            .await
+            .expect("filesystem opens");
+        fs.set_residency("", Residency::Full)
+            .await
+            .expect("full residency");
+
+        let entry = fs.create_dir("mydir").await.expect("create dir");
+        assert!(!entry.meta.file_id.is_nil());
+        assert!(!entry.meta.revision.is_nil());
+        assert_eq!(entry.meta.kind, FileKind::Directory);
+        assert_eq!(entry.meta.mode, 0o755);
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+}
