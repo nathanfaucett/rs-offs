@@ -8,16 +8,15 @@ use std::cell::RefCell;
 
 use serde::Serialize;
 use tokio::sync::mpsc;
+use uuid::Uuid;
 use wasm_bindgen::prelude::*;
-
 use crate::{
-    Entry, Error, FileHandle, FileHandleId, FileOperation, FileResponse, FileSessionService,
-    FileSystem, IncomingMessage, OpenRequest, Residency, ScanPage, SessionRequest, SyncMessage,
-    Transport,
+    Entry, Error, FileEntryMeta, FileHandle, FileHandleId, FileOperation, FileResponse,
+    FileSessionService, FileSystem, IncomingMessage, OpenRequest, Residency, ScanPage,
+    SessionRequest, SyncMessage, Transport,
 };
-
 impl From<Error> for JsValue {
-    fn from(error: Error) -> Self {
+    fn from(error: Error) -> JsValue {
         JsError::new(&error.to_string()).into()
     }
 }
@@ -70,6 +69,20 @@ extern "C" {
 
 /// Peer identifier type for the browser surface.
 pub type PeerId = String;
+
+/// Public entry for WASM serialization (excludes sync fields).
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WasmEntry {
+    pub path: String,
+    pub meta: FileEntryMeta,
+}
+
+/// Public scan page for WASM serialization (excludes sync fields).
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WasmScanPage {
+    pub entries: Vec<WasmEntry>,
+    pub next: Option<String>,
+}
 
 /// A Transport and File Session Service backed by a JavaScript bridge object.
 #[derive(Clone)]
@@ -372,13 +385,10 @@ impl FileSystemHandle {
 
 #[wasm_bindgen]
 impl FileSystemHandle {
-    /// Opens a browser File System rooted at `namespace/name` for one peer.
-    pub async fn open(
-        namespace: String,
-        name: String,
-        node_id: PeerId,
-    ) -> Result<FileSystemHandle, JsValue> {
-        let file_system = FileSystem::open_browser(&namespace, &name, node_id)
+    /// Opens a browser File System rooted at `root` for one peer.
+    pub async fn open(root: String, node_id: Option<String>) -> Result<FileSystemHandle, JsValue> {
+        let node_id = node_id.unwrap_or_else(|| "local".to_owned());
+        let file_system = FileSystem::open_browser(root, node_id)
             .await
             .map_err(error_value)?;
         Ok(Self {
@@ -410,7 +420,16 @@ impl FileSystemHandle {
     pub async fn entry(&self, path: String) -> Result<JsValue, JsValue> {
         let file_system = self.borrowed()?;
         let entry: Entry<PeerId> = file_system.entry(&path).await.map_err(error_value)?;
-        json_value(&entry)
+        let wasm_entry = WasmEntry {
+            path: entry.path,
+            meta: FileEntryMeta {
+                file_id: entry.meta.file_id,
+                revision: entry.meta.revision,
+                kind: entry.meta.kind,
+                mode: entry.meta.mode,
+            },
+        };
+        json_value(&wasm_entry)
     }
 
     pub async fn read(&self, path: String) -> Result<Vec<u8>, JsValue> {
@@ -421,7 +440,16 @@ impl FileSystemHandle {
     pub async fn write(&self, path: String, data: Vec<u8>) -> Result<JsValue, JsValue> {
         let file_system = self.borrowed()?;
         let entry = file_system.write(&path, &data).await.map_err(error_value)?;
-        json_value(&entry)
+        let wasm_entry = WasmEntry {
+            path: entry.path,
+            meta: FileEntryMeta {
+                file_id: entry.meta.file_id,
+                revision: entry.meta.revision,
+                kind: entry.meta.kind,
+                mode: entry.meta.mode,
+            },
+        };
+        json_value(&wasm_entry)
     }
 
     pub async fn write_at(
@@ -447,13 +475,34 @@ impl FileSystemHandle {
     pub async fn create_dir(&self, path: String) -> Result<JsValue, JsValue> {
         let file_system = self.borrowed()?;
         let entry = file_system.create_dir(&path).await.map_err(error_value)?;
-        json_value(&entry)
+        let wasm_entry = WasmEntry {
+            path: entry.path,
+            meta: FileEntryMeta {
+                file_id: entry.meta.file_id,
+                revision: entry.meta.revision,
+                kind: entry.meta.kind,
+                mode: entry.meta.mode,
+            },
+        };
+        json_value(&wasm_entry)
     }
 
     pub async fn list(&self, path: String) -> Result<JsValue, JsValue> {
         let file_system = self.borrowed()?;
-        let entries = file_system.list(&path).await.map_err(error_value)?;
-        json_value(&entries)
+        let entries: Vec<Entry<PeerId>> = file_system.list(&path).await.map_err(error_value)?;
+        let wasm_entries: Vec<WasmEntry> = entries
+            .into_iter()
+            .map(|entry| WasmEntry {
+                path: entry.path,
+                meta: FileEntryMeta {
+                    file_id: entry.meta.file_id,
+                    revision: entry.meta.revision,
+                    kind: entry.meta.kind,
+                    mode: entry.meta.mode,
+                },
+            })
+            .collect();
+        json_value(&wasm_entries)
     }
 
     pub async fn scan(
@@ -467,7 +516,23 @@ impl FileSystemHandle {
             .scan(&path, cursor.as_deref(), limit)
             .await
             .map_err(error_value)?;
-        json_value(&page)
+        let wasm_page = WasmScanPage {
+            entries: page
+                .entries
+                .into_iter()
+                .map(|entry| WasmEntry {
+                    path: entry.path,
+                    meta: FileEntryMeta {
+                        file_id: entry.meta.file_id,
+                        revision: entry.meta.revision,
+                        kind: entry.meta.kind,
+                        mode: entry.meta.mode,
+                    },
+                })
+                .collect(),
+            next: page.next,
+        };
+        json_value(&wasm_page)
     }
 
     pub async fn delete(&self, path: String) -> Result<(), JsValue> {
@@ -555,4 +620,3 @@ fn metadata_error(error: ofdb_kv::Error) -> Error {
     Error::Metadata(error.to_string())
 }
 
-use uuid::Uuid;

@@ -23,6 +23,15 @@ pub struct FileMeta<PeerId = Uuid> {
     pub group: String,
 }
 
+/// Public file metadata for the filesystem API (excludes sync fields).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FileEntryMeta {
+    pub file_id: Uuid,
+    pub revision: Uuid,
+    pub kind: FileKind,
+    pub mode: u32,
+}
+
 impl<PeerId: Ord> FileMeta<PeerId> {
     pub fn file(file_id: Uuid, node_id: PeerId) -> Self {
         Self::new(file_id, node_id, FileKind::File)

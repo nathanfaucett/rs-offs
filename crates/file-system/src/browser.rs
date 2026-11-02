@@ -1,3 +1,8 @@
+//! Browser-specific implementation of the file system.
+//!
+//! Uses OPFS for content and IndexedDB for metadata, with Web Locks for
+//! exclusive root ownership and durable tombstones for retirement.
+
 use std::sync::Arc;
 
 use js_sys::Uint8Array;
@@ -88,40 +93,38 @@ async fn revision_file(
         .map_err(|_| Error::ContentUnavailable)
 }
 
-fn metadata_database(namespace: &str, name: &str) -> String {
-    format!("offs:{namespace}:{name}:metadata")
+fn metadata_database(root: &str) -> String {
+    format!("offs:{root}:metadata")
 }
 
-fn tombstone_database(namespace: &str) -> String {
-    format!("offs:{namespace}:retirement")
+fn tombstone_database(root: &str) -> String {
+    format!("offs:{root}:retirement")
 }
 
-fn tombstone_key(name: &str) -> String {
-    format!("retired:{name}")
+fn tombstone_key(root: &str) -> String {
+    format!("retired:{root}")
 }
 
-/// Browser root identity: a namespace plus a name, owned through an exclusive Web Lock
+/// Browser root identity: a single root string, owned through an exclusive Web Lock
 /// scoped to the origin, retired through a durable tombstone in browser key-value storage.
 struct BrowserRoot {
     origin: web_sys::FileSystemDirectoryHandle,
-    namespace: String,
-    name: String,
+    root: String,
     lock_name: String,
     tombstone: ofdb_kv::Client,
     release: Option<js_sys::Function>,
 }
 
 impl BrowserRoot {
-    async fn new(namespace: &str, name: &str) -> Result<Self, Error> {
-        let tombstone = Database::open_indexeddb(&tombstone_database(namespace))
+    async fn new(root: &str) -> Result<Self, Error> {
+        let tombstone = Database::open_indexeddb(&tombstone_database(root))
             .await
             .map_err(metadata_error)?
             .client();
         Ok(Self {
             origin: origin_root().await?,
-            namespace: namespace.to_owned(),
-            name: name.to_owned(),
-            lock_name: format!("offs:{namespace}:{name}"),
+            root: root.to_owned(),
+            lock_name: format!("offs:{root}"),
             tombstone,
             release: None,
         })
@@ -138,7 +141,7 @@ impl Drop for BrowserRoot {
 
 impl Root for BrowserRoot {
     fn retired(&self) -> BoxFuture<'_, Result<bool, Error>> {
-        let key = tombstone_key(&self.name);
+        let key = tombstone_key(&self.root);
         Box::pin(async move {
             let future = self.tombstone.get(&key);
             Ok(future.await.map_err(metadata_error)?.is_some())
@@ -146,7 +149,7 @@ impl Root for BrowserRoot {
     }
 
     fn retire(&self) -> BoxFuture<'_, Result<(), Error>> {
-        let key = tombstone_key(&self.name);
+        let key = tombstone_key(&self.root);
         Box::pin(async move {
             let future = self.tombstone.set(&key, Value::Integer(1), None);
             future.await.map_err(metadata_error)
@@ -173,11 +176,11 @@ impl Root for BrowserRoot {
     fn remove(&mut self) -> BoxFuture<'_, Result<(), Error>> {
         Box::pin(async move {
             self.release = None;
-            let namespace = child_directory(&self.origin, &self.namespace, false).await;
-            if let Ok(namespace) = namespace {
-                remove_tree(&namespace, &self.name).await;
+            let root_dir = child_directory(&self.origin, &self.root, false).await;
+            if let Ok(root_dir) = root_dir {
+                remove_tree(&root_dir, &self.root).await;
             }
-            delete_database(&metadata_database(&self.namespace, &self.name));
+            delete_database(&metadata_database(&self.root));
             Ok(())
         })
     }
@@ -292,8 +295,7 @@ impl Drop for BrowserStaged {
             let revision = self.revision;
             wasm_bindgen_futures::spawn_local(async move {
                 if let Ok(file) = revision_file(&root, file_id, revision, false).await {
-                    if let Ok(directory) = child_directory(&root, &file_id.to_string(), false).await
-                    {
+                    if let Ok(directory) = child_directory(&root, &file_id.to_string(), false).await {
                         remove_tree(&directory, &revision.to_string()).await;
                     }
                     drop(file);
@@ -374,14 +376,12 @@ impl Staged for BrowserStaged {
     }
 }
 
-/// Opens the browser managed copy for a namespace-and-name filesystem identity.
-pub(crate) async fn open(namespace: &str, name: &str) -> Result<Arc<ManagedCopy>, Error> {
-    let key = format!("browser:{namespace}/{name}");
-    let identity = (namespace.to_owned(), name.to_owned());
+/// Opens the browser managed copy for a root filesystem identity.
+pub(crate) async fn open(root: String) -> Result<Arc<ManagedCopy>, Error> {
+    let key = format!("browser:{root}");
+    let root_for_closure = root.clone();
     let copy = ManagedCopy::shared(key, move |_| {
-        Box::pin(async move {
-            Ok(Box::new(BrowserRoot::new(&identity.0, &identity.1).await?) as Box<dyn RootObject>)
-        })
+        Box::pin(async move { Ok(Box::new(BrowserRoot::new(&root_for_closure).await?) as Box<dyn RootObject>) })
     })
     .await?;
     copy.observe_retirement().await?;
@@ -389,19 +389,18 @@ pub(crate) async fn open(namespace: &str, name: &str) -> Result<Arc<ManagedCopy>
     if copy.storage_is_open() {
         return Ok(copy);
     }
-    let mut root = copy.try_root()?;
+    let mut root_obj = copy.try_root()?;
     copy.check()?;
-    root.prepare().await?;
-    drop(root);
+    root_obj.prepare().await?;
+    drop(root_obj);
     let mut storage = copy.try_storage()?;
     copy.check()?;
     if storage.is_none() {
-        let database = Database::open_indexeddb(&metadata_database(namespace, name))
+        let database = Database::open_indexeddb(&metadata_database(&root))
             .await
             .map_err(metadata_error)?;
         let client = database.client();
-        let directory = child_directory(&origin_root().await?, namespace, true).await?;
-        let content_root = child_directory(&directory, name, true).await?;
+        let content_root = child_directory(&origin_root().await?, &root, true).await?;
         *storage = Some(Storage {
             metadata: database,
             client,
@@ -413,13 +412,11 @@ pub(crate) async fn open(namespace: &str, name: &str) -> Result<Arc<ManagedCopy>
 }
 
 /// Permanently retires and removes the browser managed copy for an identity.
-pub(crate) async fn remove_root(namespace: &str, name: &str) -> Result<(), Error> {
-    let key = format!("browser:{namespace}/{name}");
-    let identity = (namespace.to_owned(), name.to_owned());
+pub(crate) async fn remove_root(root: String) -> Result<(), Error> {
+    let key = format!("browser:{root}");
+    let root_for_closure = root.clone();
     let copy = ManagedCopy::shared(key, move |_| {
-        Box::pin(async move {
-            Ok(Box::new(BrowserRoot::new(&identity.0, &identity.1).await?) as Box<dyn RootObject>)
-        })
+        Box::pin(async move { Ok(Box::new(BrowserRoot::new(&root_for_closure).await?) as Box<dyn RootObject>) })
     })
     .await?;
     copy.remove().await

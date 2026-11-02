@@ -141,7 +141,8 @@ impl FileSystemCatalog {
         }
         #[cfg(all(target_arch = "wasm32", feature = "browser"))]
         {
-            crate::FileSystem::open_browser(&self.namespace, &id.0.to_string(), node_id).await
+            let root = format!("{}:{}", self.namespace, id.0);
+            crate::FileSystem::open_browser(root, node_id).await
         }
         #[cfg(all(target_arch = "wasm32", not(feature = "browser")))]
         {
@@ -234,7 +235,8 @@ impl FileSystemCatalog {
         }
         #[cfg(all(target_arch = "wasm32", feature = "browser"))]
         {
-            crate::browser::remove_root(&self.namespace, &id.0.to_string()).await?;
+            let root = format!("{}:{}", self.namespace, id.0);
+            crate::browser::remove_root(root).await?;
         }
         let mut transaction = self.client.transaction().await.map_err(metadata_error)?;
         let key = id.projected_key();

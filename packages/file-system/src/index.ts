@@ -8,11 +8,7 @@
 interface WasmModule {
   default(): Promise<void>;
   FileSystemHandle: {
-    open(
-      namespace: string,
-      name: string,
-      nodeId: string,
-    ): Promise<WasmFileSystemHandle>;
+    open(root: string, nodeId?: string): Promise<WasmFileSystemHandle>;
   };
 }
 
@@ -22,11 +18,7 @@ export interface FileMeta {
   file_id: string;
   revision: string;
   kind: "file" | "directory";
-  providers: string[];
-  local: boolean;
   mode: number;
-  owner: string;
-  group: string;
 }
 
 export interface Entry {
@@ -80,13 +72,9 @@ async function loadWasm(): Promise<WasmModule> {
 export class FileSystem {
   private constructor(private readonly handle: WasmFileSystemHandle) {}
 
-  static async open(
-    namespace: string,
-    name: string,
-    nodeId = "default",
-  ): Promise<FileSystem> {
+  static async open(root = "default"): Promise<FileSystem> {
     const { FileSystemHandle } = await loadWasm();
-    const handle = await FileSystemHandle.open(namespace, name, nodeId);
+    const handle = await FileSystemHandle.open(root);
     await handle.set_residency("", "full");
     return new FileSystem(handle);
   }

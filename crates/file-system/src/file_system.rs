@@ -75,8 +75,8 @@ where
     }
 
     #[cfg(all(target_arch = "wasm32", feature = "browser"))]
-    pub async fn open_browser(namespace: &str, name: &str, node_id: PeerId) -> Result<Self, Error> {
-        let owner = crate::browser::open(namespace, name).await?;
+    pub async fn open_browser(root: String, node_id: PeerId) -> Result<Self, Error> {
+        let owner = crate::browser::open(root).await?;
         Self::new(owner, node_id)
     }
 

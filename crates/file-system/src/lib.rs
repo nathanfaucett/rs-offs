@@ -32,7 +32,7 @@ mod browser;
 pub mod browser_api;
 
 pub use error::Error;
-pub use file_meta::{FileKind, FileMeta};
+pub use file_meta::{FileEntryMeta, FileKind, FileMeta};
 
 pub use file_service::{
     DEFAULT_SCAN_LIMIT, FileFuture, FileHandle, FileHandleId, FileOperation, FileResponse,

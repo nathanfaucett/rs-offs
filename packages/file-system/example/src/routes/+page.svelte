@@ -15,8 +15,8 @@ async function init() {
   try {
     error = "";
     status = "Initializing WASM…";
-    fs = await FileSystem.open("demo", "fs1", "node1");
-    status = "File system opened: demo/fs1";
+    fs = await FileSystem.open("demo-fs1");
+    status = "File system opened: demo-fs1";
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
     status = "Error";
