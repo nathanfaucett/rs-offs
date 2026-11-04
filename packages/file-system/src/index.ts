@@ -1,5 +1,5 @@
 /**
- * @offs/file-system - TypeScript wrapper for the offs WASM file system
+ * @ofsdk/file-system - TypeScript wrapper for the offs WASM file system
  *
  * Provides a typed, Promise-based API for offline-first file system operations
  * in the browser, using OPFS for content and IndexedDB for metadata.

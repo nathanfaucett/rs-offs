@@ -29,7 +29,7 @@ importers:
 
   packages/file-system/example:
     dependencies:
-      '@offs/file-system':
+      '@ofsdk/file-system':
         specifier: file:..
         version: link:..
     devDependencies:

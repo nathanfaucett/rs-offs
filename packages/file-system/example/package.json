@@ -1,9 +1,9 @@
 {
-  "name": "offs-browser-example",
+  "name": "@ofsdk/offs-browser-example",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Browser file system example for @offs/file-system (Vite + Svelte + Tailwind)",
+  "description": "Browser file system example for @ofsdk/file-system (Vite + Svelte + Tailwind)",
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
@@ -15,7 +15,7 @@
     "format:fix": "biome format --write ."
   },
   "dependencies": {
-    "@offs/file-system": "file:.."
+    "@ofsdk/file-system": "file:.."
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",

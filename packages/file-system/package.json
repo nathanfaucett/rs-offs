@@ -1,5 +1,5 @@
 {
-  "name": "@offs/file-system",
+  "name": "@ofsdk/file-system",
   "version": "0.1.0",
   "private": true,
   "type": "module",

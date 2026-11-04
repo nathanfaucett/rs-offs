@@ -1,5 +1,5 @@
 {
-  "name": "@local/offs-monorepo",
+  "name": "@ofsdk/offs-monorepo",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,11 +10,11 @@
     "format": "pnpm -r run format",
     "format:fix": "pnpm -r run format:fix",
     "packages:build": "pnpm --filter \"./packages/*\" run build",
-    "fs:build": "pnpm --filter @offs/file-system run build",
-    "fs:example:dev": "pnpm --filter offs-browser-example run dev",
-    "fs:example:build": "pnpm --filter offs-browser-example run build",
-    "fs:example:preview": "pnpm --filter offs-browser-example run preview",
-    "fs:example:check": "pnpm --filter offs-browser-example run check",
+    "fs:build": "pnpm --filter @ofsdk/file-system run build",
+    "fs:example:dev": "pnpm --filter @ofsdk/offs-browser-example run dev",
+    "fs:example:build": "pnpm --filter @ofsdk/offs-browser-example run build",
+    "fs:example:preview": "pnpm --filter @ofsdk/offs-browser-example run preview",
+    "fs:example:check": "pnpm --filter @ofsdk/offs-browser-example run check",
     "validate": "pnpm run lint && pnpm run check && pnpm run packages:build"
   },
   "devDependencies": {

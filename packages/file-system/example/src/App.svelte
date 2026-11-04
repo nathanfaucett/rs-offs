@@ -1,5 +1,5 @@
 <script lang="ts">
-import { type Entry, FileSystem } from "@offs/file-system";
+import { type Entry, FileSystem } from "@ofsdk/file-system";
 
 let fs: FileSystem | null = $state.raw(null);
 let error = $state("");
