@@ -6,15 +6,15 @@
 
 use std::cell::RefCell;
 
-use serde::Serialize;
-use tokio::sync::mpsc;
-use uuid::Uuid;
-use wasm_bindgen::prelude::*;
 use crate::{
     Entry, Error, FileEntryMeta, FileHandle, FileHandleId, FileOperation, FileResponse,
     FileSessionService, FileSystem, IncomingMessage, OpenRequest, Residency, ScanPage,
     SessionRequest, SyncMessage, Transport,
 };
+use serde::Serialize;
+use tokio::sync::mpsc;
+use uuid::Uuid;
+use wasm_bindgen::prelude::*;
 impl From<Error> for JsValue {
     fn from(error: Error) -> JsValue {
         JsError::new(&error.to_string()).into()
@@ -39,6 +39,10 @@ fn json_value(value: &impl Serialize) -> Result<JsValue, JsValue> {
     serde_json::to_string(value)
         .map(|json| JsValue::from_str(&json))
         .map_err(|error| json_error("serialization failed", error))
+}
+
+fn js_value(value: &impl Serialize) -> Result<JsValue, JsValue> {
+    serde_wasm_bindgen::to_value(value).map_err(|error| json_error("serialization failed", error))
 }
 
 /// JavaScript bridge for metadata exchange and file sessions.
@@ -429,7 +433,7 @@ impl FileSystemHandle {
                 mode: entry.meta.mode,
             },
         };
-        json_value(&wasm_entry)
+        js_value(&wasm_entry)
     }
 
     pub async fn read(&self, path: String) -> Result<Vec<u8>, JsValue> {
@@ -449,7 +453,7 @@ impl FileSystemHandle {
                 mode: entry.meta.mode,
             },
         };
-        json_value(&wasm_entry)
+        js_value(&wasm_entry)
     }
 
     pub async fn write_at(
@@ -484,7 +488,7 @@ impl FileSystemHandle {
                 mode: entry.meta.mode,
             },
         };
-        json_value(&wasm_entry)
+        js_value(&wasm_entry)
     }
 
     pub async fn list(&self, path: String) -> Result<JsValue, JsValue> {
@@ -502,7 +506,7 @@ impl FileSystemHandle {
                 },
             })
             .collect();
-        json_value(&wasm_entries)
+        js_value(&wasm_entries)
     }
 
     pub async fn scan(
@@ -532,7 +536,7 @@ impl FileSystemHandle {
                 .collect(),
             next: page.next,
         };
-        json_value(&wasm_page)
+        js_value(&wasm_page)
     }
 
     pub async fn delete(&self, path: String) -> Result<(), JsValue> {
@@ -563,7 +567,7 @@ impl FileSystemHandle {
             .export_snapshots()
             .await
             .map_err(metadata_error)?;
-        json_value(&snapshots)
+        js_value(&snapshots)
     }
 
     /// Announces metadata to every peer over the JavaScript bridge.
@@ -619,4 +623,3 @@ fn parse_uuid(value: &str) -> Result<Uuid, JsValue> {
 fn metadata_error(error: ofdb_kv::Error) -> Error {
     Error::Metadata(error.to_string())
 }
-

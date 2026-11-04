@@ -17,7 +17,7 @@ export type Residency = "full" | "passthrough";
 export interface FileMeta {
   file_id: string;
   revision: string;
-  kind: "file" | "directory";
+  kind: "File" | "Directory";
   mode: number;
 }
 

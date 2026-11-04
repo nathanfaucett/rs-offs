@@ -15,8 +15,8 @@
     "includes": [
       "src/**/*",
       "biome.json",
+      "index.html",
       "package.json",
-      "svelte.config.js",
       "tsconfig.json",
       "vite.config.ts"
     ]
