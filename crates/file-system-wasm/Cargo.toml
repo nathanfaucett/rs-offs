@@ -1,16 +1,16 @@
 [package]
-name = "offs-wasm"
+name = "file-system-wasm"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Browser (WASM) TypeScript-facing API for offs"
+description = "Browser (WASM) TypeScript-facing API for file-system"
 publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
-name = "offs_wasm"
+name = "file_system_wasm"
 
 [features]
 default = ["browser"]
@@ -26,9 +26,5 @@ file-system = { version = "0.1", path = "../file-system", package = "file-system
 console_error_panic_hook = { version = "0.1", default-features = false }
 wasm-bindgen = { version = "0.2", default-features = false, features = ["std"] }
 
-[profile.release]
-strip = false
-codegen-units = 1
-
-[target.wasm32-unknown-unknown]
-rustflags = ["-C", "target-feature=+bulk-memory,+nontrapping-float-to-int"]
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

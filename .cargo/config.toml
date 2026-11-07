@@ -157,5 +157,8 @@ rustflags = [
 # [unstable]
 # no-embed-metadata = true
 
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+bulk-memory,+nontrapping-float-to-int"]
+
 [env]
 CARGO_WORKSPACE_DIR = { value = ".", relative = true }

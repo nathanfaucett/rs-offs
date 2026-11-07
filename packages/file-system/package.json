@@ -13,7 +13,7 @@
   },
   "scripts": {
     "build": "pnpm run build:wasm && pnpm run build:ts",
-    "build:wasm": "cd ../../crates/wasm && wasm-pack build --target web --out-dir ../../packages/file-system/pkg --features browser --locked",
+    "build:wasm": "cd ../../crates/file-system-wasm && wasm-pack build --target web --out-dir ../../packages/file-system/pkg --features browser --locked",
     "build:ts": "tsc -p tsconfig.json",
     "clean": "shx rm -rf esm types pkg tsconfig.tsbuildinfo",
     "check": "tsc -p tsconfig.json --noEmit",

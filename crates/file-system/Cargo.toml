@@ -11,11 +11,6 @@ description = "Local-first, eventually consistent file system primitives"
 
 [lib]
 name = "file_system"
-crate-type = ["cdylib", "rlib"]
-
-[package.metadata.wasm-pack]
-profiles.dev = { wasm-opt = false }
-profiles.release = { wasm-opt = ["-Oz", "--enable-bulk-memory"] }
 
 [features]
 default = []

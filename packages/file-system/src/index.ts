@@ -61,7 +61,7 @@ interface WasmFileSystemHandle {
 let wasmModule: Promise<WasmModule> | undefined;
 
 async function loadWasm(): Promise<WasmModule> {
-  wasmModule ??= import("../pkg/offs_wasm.js").then(async (module) => {
+  wasmModule ??= import("../pkg/file_system_wasm.js").then(async (module) => {
     await module.default();
     return module as unknown as WasmModule;
   });
