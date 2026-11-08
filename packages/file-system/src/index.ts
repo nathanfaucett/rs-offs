@@ -41,7 +41,7 @@ interface WasmFileSystemHandle {
     path: string,
     expectedRevision: string,
     offset: bigint,
-    data: Uint8Array,
+    data: Uint8Array
   ): Promise<number>;
   append(path: string, data: Uint8Array): Promise<void>;
   create_dir(path: string): Promise<Entry>;
@@ -70,7 +70,10 @@ async function loadWasm(): Promise<WasmModule> {
 
 /** High-level file system backed by browser OPFS + IndexedDB. */
 export class FileSystem {
-  private constructor(private readonly handle: WasmFileSystemHandle) {}
+  private readonly handle: WasmFileSystemHandle;
+  private constructor(handle: WasmFileSystemHandle) {
+    this.handle = handle;
+  }
 
   static async open(root = "default"): Promise<FileSystem> {
     const { FileSystemHandle } = await loadWasm();
@@ -103,7 +106,7 @@ export class FileSystem {
     path: string,
     expectedRevision: string,
     offset: bigint,
-    data: Uint8Array,
+    data: Uint8Array
   ): Promise<number> {
     return this.handle.write_at(path, expectedRevision, offset, data);
   }

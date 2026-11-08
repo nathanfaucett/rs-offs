@@ -73,7 +73,7 @@ async function upload(files: FileList | null) {
     for (const file of Array.from(files)) {
       await f.write(
         join(cwd, file.name),
-        new Uint8Array(await file.arrayBuffer()),
+        new Uint8Array(await file.arrayBuffer())
       );
     }
     await refresh();
