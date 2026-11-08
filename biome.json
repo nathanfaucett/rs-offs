@@ -1,15 +1,55 @@
 {
-  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.6.4/schema.json",
   "root": true,
   "linter": {
     "enabled": true,
     "rules": {
       "preset": "recommended",
       "style": {
-        "useImportType": "error"
+        "useImportType": "error",
+        "useConst": "error",
+        "noParameterProperties": "error",
+        "useAsConstAssertion": "error",
+        "useEnumInitializers": "error"
       },
       "correctness": {
-        "noUnusedVariables": "error"
+        "noUnusedVariables": "error",
+        "noUnusedImports": "error",
+        "noUnusedFunctionParameters": "error",
+        "noUnusedLabels": "error",
+        "noUnusedPrivateClassMembers": "error"
+      },
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noImplicitAnyLet": "error",
+        "noConfusingVoidType": "error",
+        "noArrayIndexKey": "error",
+        "noAsyncPromiseExecutor": "error",
+        "noCatchAssign": "error",
+        "noDoubleEquals": "error",
+        "noEmptyInterface": "error",
+        "noGlobalIsNan": "error",
+        "noMisleadingInstantiator": "error",
+        "noMisleadingCharacterClass": "error",
+        "noPrototypeBuiltins": "error",
+        "noSparseArray": "error",
+        "noThenProperty": "error",
+        "noUnsafeNegation": "error"
+      },
+      "complexity": {
+        "noThisInStatic": "error",
+        "useLiteralKeys": "error",
+        "noBannedTypes": "error",
+        "noExtraBooleanCast": "error",
+        "noUselessTypeConstraint": "error",
+        "noUselessLoneBlockStatements": "error"
+      },
+      "nursery": {
+        "useAwaitThenable": "error"
+      },
+      "performance": {
+        "noDelete": "error",
+        "noAccumulatingSpread": "error"
       }
     }
   },
@@ -22,10 +62,31 @@
   "javascript": {
     "formatter": {
       "quoteStyle": "double",
-      "semicolons": "always"
+      "semicolons": "always",
+      "trailingCommas": "es5",
+      "arrowParentheses": "always",
+      "bracketSpacing": true
+    }
+  },
+  "json": {
+    "formatter": {
+      "indentStyle": "space",
+      "indentWidth": 2
     }
   },
   "files": {
-    "ignoreUnknown": true
+    "ignoreUnknown": true,
+    "includes": [
+      "**",
+      "!**/node_modules/**",
+      "!**/dist/**",
+      "!**/build/**",
+      "!**/.svelte-kit/**",
+      "!**/esm/**",
+      "!**/types/**",
+      "!**/pkg/**",
+      "!**/browser/**",
+      "!**/coverage/**"
+    ]
   }
 }

@@ -1,15 +1,5 @@
 {
   "extends": "//",
-  "linter": {
-    "rules": {
-      "style": {
-        "useImportType": "error"
-      },
-      "correctness": {
-        "noUnusedVariables": "error"
-      }
-    }
-  },
   "files": {
     "ignoreUnknown": true,
     "includes": ["src/**/*", "biome.json", "package.json", "tsconfig.json"]
