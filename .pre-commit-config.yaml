@@ -7,6 +7,12 @@ repos:
         language: system
         files: \.rs$
         pass_filenames: false
+      - id: clippy
+        name: Run clippy (fail on warnings)
+        entry: just clippy
+        language: system
+        files: \.rs$
+        pass_filenames: false
       - id: clippy-fix
         name: Run clippy with --fix
         entry: just clippy-fix
