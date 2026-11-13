@@ -36,6 +36,7 @@ For Domain information, see the [Domain Model](GLOSSARY.md).
 - Follow Rust's standard formatting and style guidelines.
 - Use `clippy` for linting and adhere to its recommendations.
 - Use `rustfmt` for consistent code formatting.
+- **Visibility**: Use only `pub` or no visibility (private). NEVER use `pub(crate)`, `pub(super)`, `pub(in path)`. Re-export public API from `lib.rs`/`mod.rs`.
 
 ## Testing
 
