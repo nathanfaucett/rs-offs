@@ -21,6 +21,7 @@ pub(crate) struct Storage {
     pub(crate) metadata: Database,
     pub(crate) client: Client,
     pub(crate) content: Arc<dyn ContentObject>,
+    pub local_state: Option<Client>,
 }
 
 pub(crate) struct ManagedCopy {
@@ -28,6 +29,7 @@ pub(crate) struct ManagedCopy {
     root: RwLock<Box<dyn RootObject>>,
     storage: RwLock<Option<Storage>>,
     pub(crate) execution: tokio::sync::Mutex<()>,
+    pub local_residency: Arc<std::sync::Mutex<crate::residency::ResidencyRules>>,
 }
 
 type Copies = BTreeMap<String, Weak<ManagedCopy>>;
@@ -61,6 +63,9 @@ impl ManagedCopy {
             root: RwLock::new(root),
             storage: RwLock::new(None),
             execution: tokio::sync::Mutex::new(()),
+            local_residency: Arc::new(std::sync::Mutex::new(
+                crate::residency::ResidencyRules::default(),
+            )),
         });
         Ok(registry(|copies| {
             copies.retain(|_, copy| copy.strong_count() != 0);

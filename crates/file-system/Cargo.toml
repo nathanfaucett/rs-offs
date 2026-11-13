@@ -55,6 +55,9 @@ bytes = { version = "1.11", default-features = false, features = [
 ] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Staged-content cleanup from synchronous Drop
+futures = { version = "0.3", default-features = false, features = ["executor", "std"] }
+
 # Internal
 ofdb-kv = { version = "0.1", path = "../../../ofdb/crates/kv", default-features = false, features = [
     "redb",

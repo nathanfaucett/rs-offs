@@ -68,13 +68,29 @@ pub struct CatalogEntry {
 
 pub struct FileSystemCatalog {
     #[cfg(not(target_arch = "wasm32"))]
-    namespace_root: PathBuf,
+    storage: CatalogStorage,
     #[cfg(all(target_arch = "wasm32", feature = "browser"))]
     namespace: String,
     client: Client,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+enum CatalogStorage {
+    Native(PathBuf),
+    Shared(ofdb_kv::SharedDatabase, String),
+}
+
 impl FileSystemCatalog {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_shared(host: &ofdb_kv::SharedDatabase, name: &str) -> Result<Self, Error> {
+        let database =
+            Database::open_shared(host, &format!("{name}:catalog")).map_err(metadata_error)?;
+        Ok(Self {
+            storage: CatalogStorage::Shared(host.clone(), name.to_owned()),
+            client: database.client(),
+        })
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open(namespace_root: impl AsRef<std::path::Path>) -> Result<Self, Error> {
         let root = namespace_root.as_ref().to_owned();
@@ -82,7 +98,7 @@ impl FileSystemCatalog {
         let database = Database::open_with_table(root.join("catalog.redb"), CATALOG_TABLE)
             .map_err(metadata_error)?;
         Ok(Self {
-            namespace_root: root.join("filesystems"),
+            storage: CatalogStorage::Native(root.join("filesystems")),
             client: database.client(),
         })
     }
@@ -137,7 +153,14 @@ impl FileSystemCatalog {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            crate::FileSystem::open(self.namespace_root.join(id.0.to_string()), node_id).await
+            match &self.storage {
+                CatalogStorage::Native(root) => {
+                    crate::FileSystem::open(root.join(id.0.to_string()), node_id).await
+                }
+                CatalogStorage::Shared(host, name) => {
+                    crate::FileSystem::open_shared(host, &format!("{name}:{}", id.0), node_id).await
+                }
+            }
         }
         #[cfg(all(target_arch = "wasm32", feature = "browser"))]
         {
@@ -231,7 +254,14 @@ impl FileSystemCatalog {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            crate::native::remove_root(&self.namespace_root.join(id.0.to_string())).await?;
+            match &self.storage {
+                CatalogStorage::Native(root) => {
+                    crate::native::remove_root(&root.join(id.0.to_string())).await?
+                }
+                CatalogStorage::Shared(host, name) => {
+                    crate::shared::remove(host, &format!("{name}:{}", id.0)).await?
+                }
+            }
         }
         #[cfg(all(target_arch = "wasm32", feature = "browser"))]
         {

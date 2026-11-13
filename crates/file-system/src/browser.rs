@@ -295,7 +295,8 @@ impl Drop for BrowserStaged {
             let revision = self.revision;
             wasm_bindgen_futures::spawn_local(async move {
                 if let Ok(file) = revision_file(&root, file_id, revision, false).await {
-                    if let Ok(directory) = child_directory(&root, &file_id.to_string(), false).await {
+                    if let Ok(directory) = child_directory(&root, &file_id.to_string(), false).await
+                    {
                         remove_tree(&directory, &revision.to_string()).await;
                     }
                     drop(file);
@@ -381,7 +382,9 @@ pub(crate) async fn open(root: String) -> Result<Arc<ManagedCopy>, Error> {
     let key = format!("browser:{root}");
     let root_for_closure = root.clone();
     let copy = ManagedCopy::shared(key, move |_| {
-        Box::pin(async move { Ok(Box::new(BrowserRoot::new(&root_for_closure).await?) as Box<dyn RootObject>) })
+        Box::pin(async move {
+            Ok(Box::new(BrowserRoot::new(&root_for_closure).await?) as Box<dyn RootObject>)
+        })
     })
     .await?;
     copy.observe_retirement().await?;
@@ -404,6 +407,7 @@ pub(crate) async fn open(root: String) -> Result<Arc<ManagedCopy>, Error> {
         *storage = Some(Storage {
             metadata: database,
             client,
+            local_state: None,
             content: Arc::new(BrowserContent { root: content_root }),
         });
     }
@@ -416,7 +420,9 @@ pub(crate) async fn remove_root(root: String) -> Result<(), Error> {
     let key = format!("browser:{root}");
     let root_for_closure = root.clone();
     let copy = ManagedCopy::shared(key, move |_| {
-        Box::pin(async move { Ok(Box::new(BrowserRoot::new(&root_for_closure).await?) as Box<dyn RootObject>) })
+        Box::pin(async move {
+            Ok(Box::new(BrowserRoot::new(&root_for_closure).await?) as Box<dyn RootObject>)
+        })
     })
     .await?;
     copy.remove().await

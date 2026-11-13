@@ -198,6 +198,7 @@ pub(crate) async fn open(root: &Path) -> Result<Arc<ManagedCopy>, Error> {
         *storage = Some(Storage {
             metadata: database,
             client,
+            local_state: None,
             content: Arc::new(NativeContent { content_root }),
         });
     }

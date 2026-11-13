@@ -9,6 +9,8 @@ mod file_system_tests;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
+#[cfg(not(target_arch = "wasm32"))]
+mod shared;
 
 mod managed_copy;
 mod memory_transport;

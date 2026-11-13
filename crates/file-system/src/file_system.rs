@@ -74,6 +74,44 @@ where
         Self::new(owner, node_id)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn open_shared(
+        host: &ofdb_kv::SharedDatabase,
+        name: &str,
+        node_id: PeerId,
+    ) -> Result<Self, Error> {
+        let owner = crate::shared::open(host, name).await?;
+        let mut filesystem = Self::new(owner.clone(), node_id)?;
+        filesystem.residency = owner.local_residency.clone();
+        {
+            let _execution = owner.execution.lock().await;
+            let storage = owner.admit().await?;
+            let state = storage
+                .as_ref()
+                .expect("admitted storage")
+                .local_state
+                .as_ref()
+                .expect("shared local state");
+            for (key, value) in state
+                .scan_prefix("residency:")
+                .await
+                .map_err(metadata_error)?
+            {
+                let mode = match value {
+                    Value::Bool(true) => Residency::Full,
+                    Value::Bool(false) => Residency::Passthrough,
+                    _ => return Err(metadata_error("invalid persisted residency")),
+                };
+                filesystem.residency.lock().expect("residency lock").set(
+                    key.strip_prefix("residency:")
+                        .expect("selected residency key"),
+                    mode,
+                )?;
+            }
+        }
+        Ok(filesystem)
+    }
+
     #[cfg(all(target_arch = "wasm32", feature = "browser"))]
     pub async fn open_browser(root: String, node_id: PeerId) -> Result<Self, Error> {
         let owner = crate::browser::open(root).await?;
@@ -259,6 +297,16 @@ where
         directory(path)?;
         if residency == Residency::Full {
             self.verify_content(path).await?;
+        }
+        if let Some(state) = &self.storage().local_state {
+            state
+                .set(
+                    &format!("residency:{path}"),
+                    Value::Bool(residency == Residency::Full),
+                    None,
+                )
+                .await
+                .map_err(metadata_error)?;
         }
         self.residency
             .lock()
@@ -531,12 +579,8 @@ where
             }
         }
         self.ensure_parent_directories(to).await?;
-        let mut transaction = self
-            .metadata()
-            .transaction()
-            .await
-            .map_err(metadata_error)?;
         let mut prepared = Vec::new();
+        let mut destinations = Vec::new();
         for (_, destination, meta) in &moves {
             let source_revision = meta.revision;
             let mut meta = meta.clone();
@@ -553,14 +597,21 @@ where
                 self.stage_publish(&mut *stage).await?;
                 prepared.push(stage);
             }
+            destinations.push((
+                destination,
+                Value::Json(JsonValue::from(
+                    serde_json::to_value(&meta).map_err(metadata_error)?,
+                )),
+            ));
+        }
+        let mut transaction = self
+            .metadata()
+            .transaction()
+            .await
+            .map_err(metadata_error)?;
+        for (destination, value) in destinations {
             transaction
-                .set(
-                    destination,
-                    Value::Json(JsonValue::from(
-                        serde_json::to_value(&meta).map_err(metadata_error)?,
-                    )),
-                    None,
-                )
+                .set(destination, value, None)
                 .await
                 .map_err(metadata_error)?;
         }
